@@ -2,6 +2,10 @@
 
 Newest first. Each entry is dated by when it landed.
 
+## 2026-10-26: Tests pass on Python 3.10.11 (after the 0.2.0 tag)
+
+- **Fixed (tests only):** the `.tar.Z` round-trip test used `tarfile`'s extraction filter, which Python 3.10.11 (the last 3.10 with a Windows installer) doesn't have. It now uses the filter only where it exists. Found by the new GitHub Actions run on Python 3.10.
+
 ## 2026-10-26: packport 0.2.0, streaming CPIO extraction
 
 - **Added:** `extract_cpio(archive, folder)` unpacks a CPIO archive straight to disk in 1 MB pieces, so archives larger than memory work. It never writes outside the folder: leading slashes are dropped (as bsdtar does), names that would still climb out or name a drive are skipped, and so are symbolic links and device files. Files keep their modification times, and hard links each get the file's data.

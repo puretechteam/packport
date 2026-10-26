@@ -121,7 +121,8 @@ def test_bsdtar_reads_tar_z(latin_tree, tmp_path):
 def test_tar_z_round_trip(unicode_tree, tmp_path):
     packport.pack(tmp_path / "out.taz", unicode_tree)
     with tarfile.open(fileobj=io.BytesIO(packport.decompress((tmp_path / "out.taz").read_bytes()))) as tf:
-        tf.extractall(tmp_path / "x", filter="data")
+        # extraction filters arrived in 3.10.12, and the last Windows installer of 3.10 is 3.10.11
+        tf.extractall(tmp_path / "x", **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
     assert read_tree(tmp_path / "x" / "src") == read_tree(unicode_tree)
 
 
