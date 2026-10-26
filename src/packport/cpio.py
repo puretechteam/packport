@@ -10,11 +10,17 @@ The format's sizes are 32-bit, so a member can't reach 4 GiB.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import re
+import shutil
 import stat
+from collections.abc import Iterator
+from pathlib import Path
+from typing import BinaryIO, NamedTuple
 
-from .entries import Entry, Member, Output, PackportError, Sources, collect, copy
+from .entries import CHUNK, Entry, Member, Output, PackportError, Sources, collect, copy
 
 MAGIC = b"070701"
 MAGIC_CRC = b"070702"   # same layout, with a byte-sum checksum of the data
@@ -90,56 +96,140 @@ def write_cpio(out, sources: Sources) -> list[Entry]:
     return entries
 
 
-def read_cpio(data: bytes | str | os.PathLike) -> list[Member]:
-    """Read a newc (``070701``) or newc-with-checksum (``070702``) CPIO archive. Symbolic links
-    come back as members whose ``mode`` says so and whose data is the link target. Hard links
-    each get the file's data (newc stores it once, with the last link). CPIO doesn't record an
-    encoding: names are UTF-8 when they're valid UTF-8, and otherwise read in the DOS code page
-    (cp437), which is what libarchive on Windows writes by default."""
-    if not isinstance(data, (bytes, bytearray, memoryview)):
-        with open(data, "rb") as f:
-            data = f.read()
-    data = bytes(data)
-    out: list[Member] = []
-    links: dict[tuple, list[Member]] = {}
-    pos = 0
+class _Header(NamedTuple):
+    name: str
+    mode: int
+    mtime: int
+    size: int
+    nlink: int
+    link_key: tuple[int, int, int]  # inode and device: hard links of one file share it
+    checksum: int | None            # the 070702 byte sum, None for plain newc
+
+
+def _headers(f: BinaryIO) -> Iterator[_Header]:
+    """Each member's header, leaving ``f`` at the start of its data. The caller reads or skips
+    exactly ``size`` bytes before asking for the next one. Stops at the TRAILER!!! entry."""
+    first = True
     while True:
-        head = data[pos:pos + HEADER_SIZE]
+        head = f.read(HEADER_SIZE)
         if len(head) < HEADER_SIZE:
             raise PackportError("CPIO archive is cut short (no TRAILER!!! entry)")
         magic = head[:6]
         if magic not in (MAGIC, MAGIC_CRC):
             if magic == b"070707" or head[:2] in (b"\xc7\x71", b"\x71\xc7"):  # odc, old binary
                 raise PackportError("This is an old-style CPIO archive; packport reads newc")
-            raise PackportError("Not a newc CPIO archive" if pos == 0 else "Damaged CPIO archive")
+            raise PackportError("Not a newc CPIO archive" if first else "Damaged CPIO archive")
+        first = False
         if not _HEX.fullmatch(head[6:]):
             raise PackportError("Damaged CPIO header")
-        f = [int(head[6 + 8 * i:14 + 8 * i], 16) for i in range(13)]
-        ino, mode, _uid, _gid, nlink, mtime, size, dev_major, dev_minor, _, _, namesize, check = f
+        ino, mode, _uid, _gid, nlink, mtime, size, dev_major, dev_minor, _, _, namesize, check = (
+            int(head[6 + 8 * i:14 + 8 * i], 16) for i in range(13))
         if namesize < 1:
             raise PackportError("Damaged CPIO header")
-        name_end = pos + HEADER_SIZE + namesize
-        if name_end > len(data):
+        padded = namesize + (-(HEADER_SIZE + namesize) % 4)
+        raw = f.read(padded)
+        if len(raw) < namesize:
             raise PackportError("CPIO archive is cut short")
-        raw = data[pos + HEADER_SIZE:name_end].split(b"\0", 1)[0]
+        raw = raw[:namesize].split(b"\0", 1)[0]
         try:
             name = raw.decode("utf-8")
         except UnicodeDecodeError:
             name = raw.decode("cp437")
-        start = name_end + (-(HEADER_SIZE + namesize) % 4)
         if name == TRAILER:
-            for group in links.values():
-                shared = next((m.data for m in reversed(group) if m.data), b"")
-                for m in group:
-                    m.data = m.data or shared
-            return out
-        end = start + size
-        if end > len(data):
-            raise PackportError(f"{name}: the archive is cut short")
-        payload = data[start:end]
-        if magic == MAGIC_CRC and stat.S_ISREG(mode) and sum(payload) & 0xFFFFFFFF != check:
-            raise PackportError(f"{name}: data checksum doesn't match (the archive is damaged)")
-        out.append(Member(name, payload, stat.S_ISDIR(mode), float(mtime), mode))
-        if nlink > 1 and stat.S_ISREG(mode):
-            links.setdefault((ino, dev_major, dev_minor), []).append(out[-1])
-        pos = end + (-size % 4)
+            return
+        yield _Header(name, mode, mtime, size, nlink, (ino, dev_major, dev_minor),
+                      check if magic == MAGIC_CRC and stat.S_ISREG(mode) else None)
+        f.read(-size % 4)
+
+
+def _data(f: BinaryIO, h: _Header, out: BinaryIO | None = None) -> bytes:
+    """Read a member's data: into ``out`` in chunks when given (returning b""), else whole."""
+    left, total, parts = h.size, 0, []
+    while left:
+        chunk = f.read(min(CHUNK, left))
+        if not chunk:
+            raise PackportError(f"{h.name}: the archive is cut short")
+        if h.checksum is not None:
+            total += sum(chunk)
+        if out is None:
+            parts.append(chunk)
+        else:
+            out.write(chunk)
+        left -= len(chunk)
+    if h.checksum is not None and total & 0xFFFFFFFF != h.checksum:
+        raise PackportError(f"{h.name}: data checksum doesn't match (the archive is damaged)")
+    return b"".join(parts)
+
+
+def _open(src) -> contextlib.AbstractContextManager[BinaryIO]:
+    """Bytes, a path, or an open binary file (which is left open)."""
+    if isinstance(src, (bytes, bytearray, memoryview)):
+        return io.BytesIO(bytes(src))
+    if hasattr(src, "read"):
+        return contextlib.nullcontext(src)
+    return open(src, "rb")
+
+
+def read_cpio(data: bytes | str | os.PathLike | BinaryIO) -> list[Member]:
+    """Read a newc (``070701``) or newc-with-checksum (``070702``) CPIO archive. Symbolic links
+    come back as members whose ``mode`` says so and whose data is the link target. Hard links
+    each get the file's data (newc stores it once, with the last link). CPIO doesn't record an
+    encoding: names are UTF-8 when they're valid UTF-8, and otherwise read in the DOS code page
+    (cp437), which is what libarchive on Windows writes by default. To unpack an archive too big
+    for memory, use ``extract_cpio``."""
+    out: list[Member] = []
+    links: dict[tuple, list[Member]] = {}
+    with _open(data) as f:
+        for h in _headers(f):
+            out.append(Member(h.name, _data(f, h), stat.S_ISDIR(h.mode), float(h.mtime), h.mode))
+            if h.nlink > 1 and stat.S_ISREG(h.mode):
+                links.setdefault(h.link_key, []).append(out[-1])
+    for group in links.values():
+        shared = next((m.data for m in reversed(group) if m.data), b"")
+        for m in group:
+            m.data = m.data or shared
+    return out
+
+
+def extract_cpio(archive: bytes | str | os.PathLike | BinaryIO, dest: str | os.PathLike) -> list[Path]:
+    """Unpack a newc CPIO archive (bytes, a path or an open binary file) into the folder
+    ``dest``, streaming file data so archives larger than memory work. Nothing lands outside
+    ``dest``: leading slashes are dropped (as bsdtar does), names that would still climb out or
+    name a drive are skipped, and so are symbolic links and device files. Files keep their
+    modification times, and hard links each get the file's data. Returns every file and folder
+    written."""
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    root = dest.resolve()
+    written: list[Path] = []
+    waiting: dict[tuple, list[Path]] = {}  # hard links seen before the one that carries the data
+    with _open(archive) as f:
+        for h in _headers(f):
+            rel = h.name.replace("\\", "/").lstrip("/")
+            target = (dest / rel).resolve()
+            if (":" in rel.split("/", 1)[0] or root not in target.parents
+                    or not (stat.S_ISDIR(h.mode) or stat.S_ISREG(h.mode))):
+                _data(f, h, _Discard())
+                continue
+            if stat.S_ISDIR(h.mode):
+                _data(f, h, _Discard())
+                target.mkdir(parents=True, exist_ok=True)
+                written.append(target)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "wb") as out:
+                _data(f, h, out)
+            os.utime(target, (h.mtime, h.mtime))
+            written.append(target)
+            if h.nlink > 1:
+                if h.size == 0:
+                    waiting.setdefault(h.link_key, []).append(target)
+                else:
+                    for other in waiting.pop(h.link_key, []):
+                        shutil.copy2(target, other)
+    return written
+
+
+class _Discard:
+    def write(self, _chunk: bytes) -> None:
+        pass

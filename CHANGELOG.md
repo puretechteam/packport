@@ -2,6 +2,13 @@
 
 Newest first. Each entry is dated by when it landed.
 
+## 2026-10-26: packport 0.2.0, streaming CPIO extraction
+
+- **Added:** `extract_cpio(archive, folder)` unpacks a CPIO archive straight to disk in 1 MB pieces, so archives larger than memory work. It never writes outside the folder: leading slashes are dropped (as bsdtar does), names that would still climb out or name a drive are skipped, and so are symbolic links and device files. Files keep their modification times, and hard links each get the file's data.
+- **Changed:** `read_cpio` reads the archive as it goes instead of loading the whole file first, and both accept an open binary file as well as bytes or a path.
+- **Added:** tests for extraction: round trips, streaming, hostile names, links, hard links and damaged archives.
+- **Added:** GitHub Actions run the tests (Python 3.10 and 3.13 on Windows, with 7-Zip) and `ruff check` on every push and pull request, plus `CONTRIBUTING.md` and `SECURITY.md`. `ruff` is in the `dev` extra.
+
 ## 2026-10-26: packport 0.1.0, first release
 
 - **Writes RAR 4** (`.rar`, `.cbr`) with stored entries, written from RARLAB's published format description:

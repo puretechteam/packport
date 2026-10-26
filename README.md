@@ -60,7 +60,7 @@ The RAR writer grew out of a short stored-RAR writer in ConvertAll's test suite,
 | RAR 4 (`.rar`, `.cbr`), stored | ✓ | ✓ (stored archives only) |
 | Unix compress (`.Z`), 9 to 16-bit LZW | ✓ | ✓ |
 | tar + compress (`.tar.Z`, `.taZ`) | ✓ | via `decompress` + `tarfile` |
-| CPIO newc (`.cpio`) | ✓ | ✓ (also the `070702` checksum variant) |
+| CPIO newc (`.cpio`) | ✓ | ✓ (also the `070702` checksum variant), and streaming extraction to a folder |
 
 **RAR 4**, written from RARLAB's published format description (`technote.txt`), never from unrar's source:
 
@@ -76,6 +76,8 @@ The RAR writer grew out of a short stored-RAR writer in ConvertAll's test suite,
 **CPIO newc** (`070701`): files, folders, permissions, modification times, the `TRAILER!!!` entry and 4-byte padding. Names are UTF-8. The format's sizes are 32-bit, so files of 4 GiB or more are refused with a clear error.
 
 Not handled: compressed or encrypted RAR, RAR 5, symbolic links and hard links, and old-style CPIO (`070707` and binary). A link to a file is stored as the file it points to. A link to a folder, including a Windows junction, is stored as an empty folder, because links can loop back up the tree. When reading, hard-linked CPIO members each get the file's data.
+
+`extract_cpio(archive, folder)` unpacks a CPIO archive without holding it in memory. Nothing lands outside the folder: leading slashes are dropped (as bsdtar does), names that would still climb out or name a drive are skipped, and so are symbolic links and device files. Files keep their modification times.
 
 Damaged archives, bad names and format limits raise `packport.PackportError`. Errors from the file system (a missing or unreadable file) stay `OSError`. A failed write removes the half-written file.
 
@@ -93,6 +95,7 @@ packport.compress(data, bits=16) -> bytes      # .Z in memory
 packport.decompress(data, max_size=None) -> bytes
 packport.read_rar(data_or_path) -> list[Member]
 packport.read_cpio(data_or_path) -> list[Member]
+packport.extract_cpio(data_path_or_file, folder) -> list[Path]  # streams
 ```
 
 `out` is a path or a writable binary file. `sources` can be:
@@ -140,7 +143,7 @@ Code layout:
 
 - `src/packport/rar.py`: RAR 4 writer and stored-RAR reader, Unicode names.
 - `src/packport/lzw.py`: Unix compress (`.Z`) and `.tar.Z`.
-- `src/packport/cpio.py`: CPIO newc writer and reader.
+- `src/packport/cpio.py`: CPIO newc writer, reader and extractor.
 - `src/packport/entries.py`: entries, name checks, gathering files and folders.
 
 ## License

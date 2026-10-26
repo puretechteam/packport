@@ -11,9 +11,9 @@ or from a terminal: ``packport pages/ comic.cbr``.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-from .cpio import CpioWriter, read_cpio, write_cpio
+from .cpio import CpioWriter, extract_cpio, read_cpio, write_cpio
 from .entries import Entry, Member, PackportError, Sources, collect, tree
 from .lzw import (
     ZCompressor,
@@ -47,6 +47,7 @@ __all__ = [
     "collect",
     "compress",
     "decompress",
+    "extract_cpio",
     "format_of",
     "pack",
     "read_cpio",

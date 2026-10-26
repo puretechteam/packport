@@ -1,10 +1,15 @@
 import io
+import os
+import random
+import stat
 
 import pytest
 from conftest import MTIME, read_tree, sparse_file
 
 import packport
-from packport import CpioWriter, PackportError, read_cpio, write_cpio
+from packport import CpioWriter, PackportError, extract_cpio, read_cpio, write_cpio
+from packport.cpio import _header
+from packport.entries import CHUNK
 
 
 def test_layout():
@@ -64,3 +69,75 @@ def test_reader_refuses_other_cpio_flavours():
         read_cpio(b"070707" + bytes(200))
     with pytest.raises(PackportError, match="cut short"):
         read_cpio(b"")
+
+
+def _raw(*members) -> bytes:
+    """A newc archive from (name, mode, data, nlink, ino) tuples, names unchecked."""
+    out = b""
+    for name, mode, data, nlink, ino in members:
+        out += _header(ino, mode, nlink, MTIME, len(data), name.encode()) + data + bytes(-len(data) % 4)
+    return out + _header(0, 0, 1, 0, 0, b"TRAILER!!!")
+
+
+def test_extract_round_trip(unicode_tree, tmp_path):
+    write_cpio(tmp_path / "out.cpio", packport.tree(unicode_tree))
+    written = extract_cpio(tmp_path / "out.cpio", tmp_path / "x")
+    assert read_tree(tmp_path / "x") == read_tree(unicode_tree)
+    assert len(written) == len(read_cpio(tmp_path / "out.cpio"))
+    assert os.stat(tmp_path / "x" / "readme.txt").st_mtime == MTIME
+
+
+def test_extract_streams_without_reading_the_archive_whole(tmp_path):
+    payload = os.urandom(3 * CHUNK + 5)
+    write_cpio(tmp_path / "big.cpio", {"big.bin": payload})
+    reads = []
+
+    class Spy(io.FileIO):
+        def read(self, n=-1):
+            reads.append(n)
+            return super().read(n)
+
+    with Spy(tmp_path / "big.cpio") as f:
+        extract_cpio(f, tmp_path / "x")
+        assert not f.closed  # a file the caller opened stays open
+    assert (tmp_path / "x" / "big.bin").read_bytes() == payload
+    assert max(reads) <= CHUNK and -1 not in reads
+
+
+def test_extract_keeps_everything_inside_the_folder(tmp_path):
+    data = _raw(("../escaped.txt", stat.S_IFREG | 0o644, b"no", 1, 1),
+                ("/abs.txt", stat.S_IFREG | 0o644, b"ok", 1, 2),
+                ("C:evil.txt", stat.S_IFREG | 0o644, b"no", 1, 3),
+                ("link", stat.S_IFLNK | 0o777, b"../../outside", 1, 4),
+                ("dev", stat.S_IFCHR | 0o644, b"", 1, 5),
+                ("dir/../../up.txt", stat.S_IFREG | 0o644, b"no", 1, 6),
+                ("fine/ok.txt", stat.S_IFREG | 0o644, b"yes", 1, 7))
+    dest = tmp_path / "inside" / "x"
+    extract_cpio(data, dest)
+    assert sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*")) == ["abs.txt", "fine", "fine/ok.txt"]
+    assert not (tmp_path / "inside" / "escaped.txt").exists() and not (tmp_path / "inside" / "up.txt").exists()
+
+
+def test_extract_gives_hard_links_the_data():
+    import tempfile
+    from pathlib import Path
+    data = _raw(("a", stat.S_IFREG | 0o644, b"", 2, 9), ("b", stat.S_IFREG | 0o644, b"shared", 2, 9))
+    with tempfile.TemporaryDirectory() as tmp:
+        extract_cpio(data, tmp)
+        assert (Path(tmp) / "a").read_bytes() == (Path(tmp) / "b").read_bytes() == b"shared"
+
+
+def test_extract_damaged_archives_raise_packport_error(tmp_path):
+    write_cpio(tmp_path / "s.cpio", {"a.txt": b"hello" * 100, "d/b.txt": b"world"})
+    data = (tmp_path / "s.cpio").read_bytes()
+    rng = random.Random(1)
+    for i in range(200):
+        b = bytearray(data)
+        for _ in range(rng.randint(1, 6)):
+            b[rng.randrange(len(b))] = rng.randrange(256)
+        if rng.random() < 0.3:
+            b = b[:rng.randrange(len(b))]
+        try:
+            extract_cpio(bytes(b), tmp_path / f"x{i}")
+        except PackportError:
+            pass
