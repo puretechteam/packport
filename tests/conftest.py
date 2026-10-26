@@ -19,9 +19,13 @@ SEVEN_ZIP = _first(shutil.which("7z"), shutil.which("7z.exe"), "C:/Program Files
 # libarchive's bsdtar: Windows ships it as tar.exe; elsewhere "tar" is usually GNU tar, which can't read RAR
 BSDTAR = _first("C:/Windows/System32/tar.exe" if os.name == "nt" else None, shutil.which("bsdtar"))
 GZIP = shutil.which("gzip")
+# calibre bundles RARLAB's own unrar library (through unrardll), and reads comics from CBR files
+CALIBRE_DEBUG = _first(shutil.which("calibre-debug"), "C:/Program Files/Calibre2/calibre-debug.exe")
+EBOOK_CONVERT = _first(shutil.which("ebook-convert"), "C:/Program Files/Calibre2/ebook-convert.exe")
 
 needs_7z = pytest.mark.skipif(SEVEN_ZIP is None, reason="7-Zip isn't installed")
 needs_bsdtar = pytest.mark.skipif(BSDTAR is None, reason="bsdtar (Windows tar.exe) isn't available")
+needs_unrar = pytest.mark.skipif(CALIBRE_DEBUG is None, reason="calibre (which bundles unrar) isn't installed")
 
 # Every name works with 7-Zip. Windows' tar.exe converts names to the system's ANSI code page and
 # skips any it can't represent (it does the same with zip and tar files made by Python), so its
@@ -84,6 +88,17 @@ def extract_bsdtar(archive: Path, dest: Path, *options) -> Path:
     dest.mkdir(parents=True, exist_ok=True)
     run(BSDTAR, *options, "-xf", archive, "-C", dest)
     return dest
+
+
+def unrar(mode: str, archive: Path, *args, ok=True):
+    """Run tests/unrar_helper.py in calibre's Python: unrar's view of the headers, after
+    extracting or verifying (see the helper). Returns the parsed JSON, or the process on failure."""
+    import json
+    helper = Path(__file__).with_name("unrar_helper.py")
+    r = run(CALIBRE_DEBUG, "-e", helper, mode, archive, *args, ok=ok)
+    if r.returncode:
+        return r
+    return json.loads(r.stdout.decode("utf-8").strip().splitlines()[-1])
 
 
 def sparse_file(path: Path, size: int, marks: dict) -> Path:

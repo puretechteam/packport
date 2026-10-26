@@ -14,4 +14,4 @@ Newest first. Each entry is dated by when it landed.
 - **Writes CPIO newc** (`.cpio`): files, folders, permissions and modification times.
 - **Reads** stored RAR 4, `.Z` and CPIO newc, for round trips without other tools. Damaged archives raise `PackportError`; `.Z` output can be capped with `max_size`.
 - **Command line:** `packport SOURCES... OUT`, with the format taken from OUT's extension.
-- **Tested** against 7-Zip, libarchive (Windows' `tar.exe`) and gzip, byte for byte, with Unicode names, empty folders and files, a sparse file over 4 GiB, corrupted archives and random trees.
+- **Tested** byte for byte against RARLAB's own unrar (bundled with calibre), 7-Zip, libarchive (Windows' `tar.exe`) and gzip. The tests use Unicode names, empty folders and files, sparse files of 3 GiB and over 4 GiB, corrupted archives and random trees. They pass on Python 3.10, 3.11 and 3.13 and in a PyInstaller build.

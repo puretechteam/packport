@@ -116,3 +116,9 @@ def test_bad_streams():
         with pytest.raises(PackportError):
             decompress(bad)
     assert decompress(b"\x1f\x9d\x90") == b""
+
+
+def test_non_block_mode_streams():
+    # compress before block mode (header byte 0x10, no 0x80): no CLEAR code, new codes from 256
+    acc = sum(c << (9 * i) for i, c in enumerate([65, 66, 256, 258]))
+    assert decompress(b"\x1f\x9d\x10" + acc.to_bytes(5, "little")) == b"ABABABA"

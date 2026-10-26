@@ -32,7 +32,7 @@ Some archive formats are easy to read but have no free way to write them:
 - **Unix compress (`.Z`).** Python's standard library has gzip, bz2 and lzma, but no LZW. 7-Zip reads `.Z` but can't write it.
 - **CPIO.** Python has `tarfile` and `zipfile`, but no `cpio` module. 7-Zip reads CPIO but can't write it.
 
-packport writes all three in about 42 KB of Python with no dependencies, so it installs anywhere Python 3.10+ does and bundles cleanly into a PyInstaller app.
+packport writes all three in about 44 KB of Python with no dependencies, so it installs anywhere Python 3.10+ does and bundles cleanly into a PyInstaller app.
 
 **RAR without the compressor.** packport writes RAR 4 with every file *stored* (method 0x30). That's the format every RAR reader opens, including old comic book apps that predate RAR 5. Comic pages are JPEG or PNG, which don't compress further anyway: packport writes a 200-page, 100 MB comic in 0.09 s, about the time 7-Zip takes to store the same pages in a ZIP (0.08 s). It's limited by the disk, not by Python.
 
@@ -75,9 +75,9 @@ The RAR writer grew out of a short stored-RAR writer in ConvertAll's test suite,
 
 **CPIO newc** (`070701`): files, folders, permissions, modification times, the `TRAILER!!!` entry and 4-byte padding. Names are UTF-8. The format's sizes are 32-bit, so files of 4 GiB or more are refused with a clear error.
 
-Not handled: compressed or encrypted RAR, RAR 5, symbolic links and hard links, and old-style CPIO (`070707` and binary). A link to a file is stored as the file it points to, and a link to a folder as an empty folder.
+Not handled: compressed or encrypted RAR, RAR 5, symbolic links and hard links, and old-style CPIO (`070707` and binary). A link to a file is stored as the file it points to. A link to a folder, including a Windows junction, is stored as an empty folder, because links can loop back up the tree. When reading, hard-linked CPIO members each get the file's data.
 
-Every failure raises `packport.PackportError`: a bad name, a damaged archive, a limit of the format. A failed write removes the half-written file.
+Damaged archives, bad names and format limits raise `packport.PackportError`. Errors from the file system (a missing or unreadable file) stay `OSError`. A failed write removes the half-written file.
 
 ## The API
 
@@ -114,13 +114,17 @@ with packport.RarWriter("pages.cbr") as rar:
 
 ## How it's tested
 
+- **Against unrar, RARLAB's own reader.** calibre bundles RARLAB's unrar library, so the tests run it through calibre (`tests/unrar_helper.py`). It extracts packport's RAR files byte for byte, Unicode names included, and reports the headers packport meant to write. It refuses a copy with one flipped data byte, which shows it really checks packport's CRCs. calibre's comic reader also opens a packport `.cbr` as a comic.
+- **Against a WinRAR archive.** WinRAR's own main header is byte-identical to packport's. In a real WinRAR-made archive, all 40 header CRCs check out under packport's rules, and names and dates decode as 7-Zip shows them.
 - **Against 7-Zip 24.09.** Every RAR, CPIO and `.Z` file the tests write is extracted by 7-Zip and compared byte for byte with the source. The tree has nested folders, empty folders, empty files, odd sizes and Unicode names (Japanese, Chinese, Greek, accented letters, emoji). `7z t` also checks every RAR CRC.
 - **Against libarchive 3.8.9** (Windows' own `tar.exe`). The same checks for RAR, CPIO, `.Z` and `.tar.Z`, plus modification times. `tar.exe` converts names to the Windows code page and skips any that don't fit, for ZIP and tar files from other tools too, so its tests use accented Latin names.
 - **Against gzip 1.13**, which decompresses `.Z`.
 - **Byte-identical `.Z`.** packport's output is compared with libarchive's compress writer on every payload, including dictionary resets and inputs past 8 MB.
-- **A file over 4 GiB** (sparse, so it costs no disk space): written to RAR, then tested and extracted by 7-Zip and libarchive and compared by SHA-256. It writes 4 GB, so it runs only with `PACKPORT_SLOW=1`.
+- **Reading other tools' archives.** CPIO and `.Z` written by libarchive, including hard links and names in the Windows code page, read back exactly.
+- **Big files** (sparse, so they cost no disk space): a 3 GiB file (32-bit sizes with the top bit set) in RAR and CPIO, and a file over 4 GiB in RAR. 7-Zip and libarchive extract each one, compared by SHA-256, and unrar reads every byte and checks the CRC. These write several GB, so they run only with `PACKPORT_SLOW=1` (about a minute and a half). In the normal suite, a 300 MB file is written with Python never holding more than 20 MB.
 - **Damaged files.** The readers get thousands of corrupted, truncated and random archives and must only ever raise `PackportError`.
-- **Random trees.** Randomly generated folders, names and sizes go through every writer and come back unchanged, through packport's readers, 7-Zip and libarchive.
+- **Random trees.** Randomly generated folders, names and sizes go through every writer and come back unchanged, through packport's readers, 7-Zip, libarchive and unrar.
+- **Python 3.10, 3.11 and 3.13**, the whole suite on each. Also a clean `pip install` from git (nothing else gets installed), and a PyInstaller one-file build using `collect_submodules("packport")`, whose archives 7-Zip accepts.
 
 ## Development
 
@@ -130,7 +134,7 @@ python -m venv .venv
 .venv\Scripts\python -m pytest
 ```
 
-The tests that need 7-Zip, `tar.exe` (libarchive's `bsdtar` elsewhere) or gzip skip when those aren't installed. Run the 4 GiB test with `PACKPORT_SLOW=1`.
+The tests that need 7-Zip, `tar.exe` (libarchive's `bsdtar` elsewhere), gzip or calibre (for unrar) skip when those aren't installed. Run the big-file tests with `PACKPORT_SLOW=1`.
 
 Code layout:
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -94,6 +95,7 @@ def tree(folder: str | os.PathLike, prefix: str = "") -> list[Entry]:
     if not folder.is_dir():
         raise PackportError(f"Not a folder: {folder}")
     out: list[Entry] = []
+    seen = {_identity(folder)}
 
     def walk(path: Path, arc: str):
         for child in sorted(path.iterdir(), key=lambda p: p.name):
@@ -101,7 +103,10 @@ def tree(folder: str | os.PathLike, prefix: str = "") -> list[Entry]:
             if child.is_dir():
                 st = child.stat()
                 out.append(Entry(name, None, True, st.st_mtime, None if os.name == "nt" else st.st_mode & 0o7777))
-                if not child.is_symlink():  # a link to a folder could loop back on itself
+                # links to folders (symlinks, Windows junctions) are stored as empty folders: they
+                # can point back up the tree, and following them would archive things twice
+                if not _is_link(child) and _identity(child) not in seen:
+                    seen.add(_identity(child))
                     walk(child, name)
             else:
                 out.append(Entry(name, child))
@@ -111,6 +116,19 @@ def tree(folder: str | os.PathLike, prefix: str = "") -> list[Entry]:
         out.append(Entry(prefix, None, True, st.st_mtime))
     walk(folder, clean_name(prefix) if prefix else "")
     return out
+
+
+def _is_link(path: Path) -> bool:
+    """A symbolic link, or a Windows junction (which ``is_symlink()`` doesn't report)."""
+    if path.is_symlink():
+        return True
+    tag = getattr(os.lstat(path), "st_reparse_tag", 0)
+    return tag in (getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", -1), getattr(stat, "IO_REPARSE_TAG_SYMLINK", -1))
+
+
+def _identity(path: Path) -> tuple[int, int]:
+    st = os.stat(path)
+    return st.st_dev, st.st_ino
 
 
 def collect(sources: Sources) -> list[Entry]:

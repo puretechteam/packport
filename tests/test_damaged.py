@@ -167,3 +167,41 @@ def test_random_trees_extract_with_bsdtar(tmp_path, seed):
                              ("tar.Z", packport.write_tar_z, [])]:
         write(tmp_path / f"r.{fmt}", items)
         assert read_tree(extract_bsdtar(tmp_path / f"r.{fmt}", tmp_path / fmt, *opts)) == as_dict(items)
+
+
+def test_looping_folder_links_are_not_followed(tmp_path):
+    import os
+    import subprocess
+    root = tmp_path / "src"
+    (root / "real").mkdir(parents=True)
+    (root / "real" / "f.txt").write_bytes(b"data")
+    loop = root / "real" / "loop"
+    try:
+        os.symlink(root, loop, target_is_directory=True)
+    except OSError:
+        if os.name != "nt":
+            raise
+        # no symlink privilege on Windows: a junction needs none, and is_symlink() can't see it
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(loop), str(root)], check=True, capture_output=True)
+    entries = packport.tree(root)
+    assert [(e.name, e.is_dir) for e in entries] == [("real", True), ("real/f.txt", False), ("real/loop", True)]
+
+
+@pytest.mark.parametrize("write", [packport.write_cpio, packport.write_tar_z], ids=["cpio", "tar.Z"])
+def test_non_seekable_output(tmp_path, write):
+    class Pipe(io.RawIOBase):
+        def __init__(self):
+            self.buf = bytearray()
+
+        def writable(self):
+            return True
+
+        def write(self, b):
+            self.buf += b
+            return len(b)
+
+    root = make_tree(tmp_path / "src")
+    pipe = Pipe()
+    write(pipe, packport.tree(root))
+    write(tmp_path / "file", packport.tree(root))
+    assert bytes(pipe.buf) == (tmp_path / "file").read_bytes()

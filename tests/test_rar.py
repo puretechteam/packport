@@ -169,3 +169,22 @@ def test_reader_refuses_what_it_cannot_read(tmp_path):
     data[20:22] = struct.pack("<H", zlib.crc32(data[22:20 + 37]) & 0xFFFF)
     with pytest.raises(PackportError, match="compressed"):
         read_rar(bytes(data))
+
+
+def test_names_too_long_for_a_header(tmp_path):
+    with pytest.raises(PackportError, match="too long"):
+        write_rar(tmp_path / "long.rar", {"x" * 70000: b""})
+    assert not (tmp_path / "long.rar").exists()
+
+
+def test_files_are_streamed_not_loaded(tmp_path):
+    import tracemalloc
+
+    from conftest import sparse_file
+    big = sparse_file(tmp_path / "big.bin", 300_000_000, {150_000_000: b"middle"})
+    for write in (write_rar, packport.write_cpio):
+        tracemalloc.start()
+        write(tmp_path / "out", [big])
+        peak = tracemalloc.get_traced_memory()[1]
+        tracemalloc.stop()
+        assert peak < 20_000_000, (write.__name__, peak)  # a few 1 MB chunks, not 300 MB

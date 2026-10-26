@@ -92,12 +92,16 @@ def write_cpio(out, sources: Sources) -> list[Entry]:
 
 def read_cpio(data: bytes | str | os.PathLike) -> list[Member]:
     """Read a newc (``070701``) or newc-with-checksum (``070702``) CPIO archive. Symbolic links
-    come back as members whose ``mode`` says so and whose data is the link target."""
+    come back as members whose ``mode`` says so and whose data is the link target. Hard links
+    each get the file's data (newc stores it once, with the last link). CPIO doesn't record an
+    encoding: names are UTF-8 when they're valid UTF-8, and otherwise read in the DOS code page
+    (cp437), which is what libarchive on Windows writes by default."""
     if not isinstance(data, (bytes, bytearray, memoryview)):
         with open(data, "rb") as f:
             data = f.read()
     data = bytes(data)
     out: list[Member] = []
+    links: dict[tuple, list[Member]] = {}
     pos = 0
     while True:
         head = data[pos:pos + HEADER_SIZE]
@@ -111,15 +115,23 @@ def read_cpio(data: bytes | str | os.PathLike) -> list[Member]:
         if not _HEX.fullmatch(head[6:]):
             raise PackportError("Damaged CPIO header")
         f = [int(head[6 + 8 * i:14 + 8 * i], 16) for i in range(13)]
-        _ino, mode, _uid, _gid, _nlink, mtime, size, *_, namesize, check = f
+        ino, mode, _uid, _gid, nlink, mtime, size, dev_major, dev_minor, _, _, namesize, check = f
         if namesize < 1:
             raise PackportError("Damaged CPIO header")
         name_end = pos + HEADER_SIZE + namesize
         if name_end > len(data):
             raise PackportError("CPIO archive is cut short")
-        name = data[pos + HEADER_SIZE:name_end].split(b"\0", 1)[0].decode("utf-8", "replace")
+        raw = data[pos + HEADER_SIZE:name_end].split(b"\0", 1)[0]
+        try:
+            name = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            name = raw.decode("cp437")
         start = name_end + (-(HEADER_SIZE + namesize) % 4)
         if name == TRAILER:
+            for group in links.values():
+                shared = next((m.data for m in reversed(group) if m.data), b"")
+                for m in group:
+                    m.data = m.data or shared
             return out
         end = start + size
         if end > len(data):
@@ -128,4 +140,6 @@ def read_cpio(data: bytes | str | os.PathLike) -> list[Member]:
         if magic == MAGIC_CRC and stat.S_ISREG(mode) and sum(payload) & 0xFFFFFFFF != check:
             raise PackportError(f"{name}: data checksum doesn't match (the archive is damaged)")
         out.append(Member(name, payload, stat.S_ISDIR(mode), float(mtime), mode))
+        if nlink > 1 and stat.S_ISREG(mode):
+            links.setdefault((ino, dev_major, dev_minor), []).append(out[-1])
         pos = end + (-size % 4)

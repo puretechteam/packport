@@ -146,3 +146,64 @@ def test_format_of():
     assert packport.format_of("Comic.CBR") == "cbr"
     with pytest.raises(packport.PackportError):
         packport.format_of("x.7z")
+
+
+@needs_bsdtar
+@pytest.mark.parametrize("utf8", [True, False])
+def test_we_read_libarchive_cpio(latin_tree, tmp_path, utf8):
+    # libarchive writes hard links the newc way (data only with the last link), and on Windows
+    # writes names in the DOS code page unless told to use UTF-8 (packport falls back to cp437)
+    os.link(latin_tree / "readme.txt", latin_tree / "hard link.txt")
+    opts = ["--options", "hdrcharset=UTF-8"] if utf8 else []
+    run(BSDTAR, "--format", "newc", *opts, "-cf", tmp_path / "lib.cpio", "-C", latin_tree, ".")
+    run(BSDTAR, "--format", "newc", *opts, "-cZf", tmp_path / "lib.cpio.Z", "-C", latin_tree, ".")
+    expected = read_tree(latin_tree)
+    if not utf8 and not (os.name == "nt" and __import__("ctypes").windll.kernel32.GetOEMCP() == 437):
+        expected = {k: v for k, v in expected.items() if k.isascii()}  # the code page here isn't cp437
+    for data in [(tmp_path / "lib.cpio").read_bytes(), packport.decompress((tmp_path / "lib.cpio.Z").read_bytes())]:
+        got = {m.name.removeprefix("./"): (None if m.is_dir else m.data)
+               for m in packport.read_cpio(data) if m.name != "."}
+        assert {k: v for k, v in got.items() if k in expected or utf8} == expected
+
+
+@needs_bsdtar
+def test_we_read_libarchive_tar_z(latin_tree, tmp_path):
+    # Latin names: tar.exe crashes writing names outside the Windows code page
+    run(BSDTAR, "--options", "hdrcharset=UTF-8", "-cZf", tmp_path / "lib.tar.Z", "-C", latin_tree, ".")
+    with tarfile.open(fileobj=io.BytesIO(packport.decompress((tmp_path / "lib.tar.Z").read_bytes()))) as tf:
+        files = {m.name.removeprefix("./"): tf.extractfile(m).read() for m in tf if m.isfile()}
+    assert files == {k: v for k, v in read_tree(latin_tree).items() if v is not None}
+
+
+@pytest.mark.parametrize("bits", [10, 12, 14])
+def test_other_code_widths_decode_elsewhere(tmp_path, bits):
+    data = PAYLOADS["text, then noise, then text"]
+    (tmp_path / "w.bin.Z").write_bytes(packport.compress(data, bits))
+    checked = 0
+    if GZIP:
+        assert run(GZIP, "-dc", tmp_path / "w.bin.Z").stdout == data
+        checked += 1
+    if SEVEN_ZIP:
+        assert (extract_7z(tmp_path / "w.bin.Z", tmp_path / "x") / "w.bin").read_bytes() == data
+        checked += 1
+    if not checked:
+        pytest.skip("neither gzip nor 7-Zip is installed")
+
+
+@needs_7z
+def test_read_only_flag(tmp_path):
+    import stat
+    packport.write_rar(tmp_path / "ro.rar", [packport.Entry("locked.txt", b"x", mode=0o444),
+                                             packport.Entry("open.txt", b"y")])
+    assert [m.mode for m in packport.read_rar(tmp_path / "ro.rar")] == [0o100444, 0o100644]
+    out = extract_7z(tmp_path / "ro.rar", tmp_path / "x")
+    assert not os.stat(out / "locked.txt").st_mode & stat.S_IWRITE
+    assert os.stat(out / "open.txt").st_mode & stat.S_IWRITE
+    os.chmod(out / "locked.txt", 0o644)  # so the temp folder can be cleaned up
+
+
+def test_pack_with_explicit_format(tmp_path):
+    packport.pack(tmp_path / "comic.zip.tmp", {"a.jpg": b"1"}, fmt="cbr")
+    assert packport.read_rar(tmp_path / "comic.zip.tmp")[0].data == b"1"
+    with pytest.raises(packport.PackportError, match="single file"):
+        packport.pack(tmp_path / "two.Z", [("a", b"1"), ("b", b"2")])

@@ -188,9 +188,11 @@ class RarWriter:
     def add_entry(self, e: Entry) -> None:
         if e.name in self._names:
             raise PackportError(f"{e.name} is in the archive twice")
-        self._names.add(e.name)
         name, unicode = encode_name(e.name)
-        attr = ATTR_DIRECTORY if e.is_dir else ATTR_ARCHIVE
+        if 7 + _FILE.size + 8 + len(name) > 0xFFFF:  # HEAD_SIZE is 16 bits
+            raise PackportError(f"{e.name[:40]}...: the name is too long for a RAR header")
+        self._names.add(e.name)
+        attr =ATTR_DIRECTORY if e.is_dir else ATTR_ARCHIVE
         if not e.mode & 0o200:
             attr |= ATTR_READONLY
         ftime = dos_time(e.mtime)
