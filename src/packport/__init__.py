@@ -11,7 +11,7 @@ or from a terminal: ``packport pages/ comic.cbr``.
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 from .cpio import CpioWriter, extract_cpio, read_cpio, write_cpio
 from .entries import Entry, Member, PackportError, Sources, collect, tree
@@ -72,7 +72,8 @@ def format_of(path) -> str:
 
 def pack(out, sources: Sources, fmt: str | None = None) -> None:
     """Write ``sources`` to ``out``, choosing the format from its extension unless ``fmt`` is given.
-    ``.Z`` takes exactly one file; the others take anything ``collect`` accepts."""
+    Every format takes anything ``collect`` accepts; ``.Z`` also takes plain bytes, and needs
+    exactly one file."""
     fmt = (fmt or format_of(out)).lower().lstrip(".")
     if fmt in ("rar", "cbr"):
         write_rar(out, sources)
@@ -81,11 +82,11 @@ def pack(out, sources: Sources, fmt: str | None = None) -> None:
     elif fmt in ("tar.z", "taz"):
         write_tar_z(out, sources)
     elif fmt == "z":
-        if not isinstance(sources, (str, bytes)) and not hasattr(sources, "__fspath__"):
-            items = list(sources)
-            if len(items) != 1:
+        if not isinstance(sources, (bytes, bytearray, memoryview)):
+            entries = collect(sources)
+            if len(entries) != 1 or entries[0].is_dir:
                 raise PackportError(".Z holds a single file; for several files write a .tar.Z")
-            sources = items[0]
+            sources = entries[0].source
         write_z(out, sources)
     else:
         raise PackportError(f"Unknown format {fmt!r}")

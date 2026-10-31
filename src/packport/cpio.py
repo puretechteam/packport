@@ -20,12 +20,24 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO, NamedTuple
 
-from .entries import CHUNK, Entry, Member, Output, PackportError, Sources, collect, copy
+from .entries import (
+    CHUNK,
+    Entry,
+    Member,
+    Output,
+    PackportError,
+    Sources,
+    clamp_time,
+    collect,
+    copy,
+)
 
 MAGIC = b"070701"
 MAGIC_CRC = b"070702"   # same layout, with a byte-sum checksum of the data
 TRAILER = "TRAILER!!!"
 HEADER_SIZE = 110
+MAX_NAME = 1 << 16       # the longest name read or written, in bytes with its NUL (Linux allows 4096)
+MAX_FILES = 1_000_000    # extract_cpio's default limit on members
 _HEX = re.compile(rb"[0-9A-Fa-f]{104}")
 
 
@@ -55,7 +67,9 @@ class CpioWriter:
         if e.name in self._names:
             raise PackportError(f"{e.name} is in the archive twice")
         name = e.name.encode("utf-8")
-        mtime = min(max(int(e.mtime), 0), 0xFFFFFFFF)
+        if len(name) >= MAX_NAME:
+            raise PackportError(f"{e.name[:40]}...: the name is too long for packport's CPIO reader")
+        mtime = clamp_time(e.mtime, 0xFFFFFFFF)
         self._ino += 1
         if e.is_dir:
             self._names.add(e.name)
@@ -126,6 +140,9 @@ def _headers(f: BinaryIO) -> Iterator[_Header]:
             int(head[6 + 8 * i:14 + 8 * i], 16) for i in range(13))
         if namesize < 1:
             raise PackportError("Damaged CPIO header")
+        if namesize > MAX_NAME:  # checked before reading it: a hostile size could be 4 GiB
+            raise PackportError(f"Damaged CPIO header (a name of {namesize:,} bytes; "
+                                f"packport reads names up to {MAX_NAME:,})")
         padded = namesize + (-(HEADER_SIZE + namesize) % 4)
         raw = f.read(padded)
         if len(raw) < namesize:
@@ -176,7 +193,10 @@ def read_cpio(data: bytes | str | os.PathLike | BinaryIO) -> list[Member]:
     each get the file's data (newc stores it once, with the last link). CPIO doesn't record an
     encoding: names are UTF-8 when they're valid UTF-8, and otherwise read in the DOS code page
     (cp437), which is what libarchive on Windows writes by default. To unpack an archive too big
-    for memory, use ``extract_cpio``."""
+    for memory, use ``extract_cpio``.
+
+    Names come back exactly as stored, so they can be absolute or contain ``..``: never join them
+    onto a folder yourself. ``extract_cpio`` makes them safe."""
     out: list[Member] = []
     links: dict[tuple, list[Member]] = {}
     with _open(data) as f:
@@ -191,42 +211,149 @@ def read_cpio(data: bytes | str | os.PathLike | BinaryIO) -> list[Member]:
     return out
 
 
-def extract_cpio(archive: bytes | str | os.PathLike | BinaryIO, dest: str | os.PathLike) -> list[Path]:
+# Names Windows keeps for devices, with or without an extension ("CON", "nul.txt", "COM¹")
+_DEVICES = ({"con", "prn", "aux", "nul", "conin$", "conout$", "clock$"}
+            | {f"{d}{n}" for d in ("com", "lpt") for n in "123456789¹²³"})
+_WINDOWS_BAD = re.compile(r'[\x00-\x1f<>:"|?*]')
+
+
+def _windows_name(part: str) -> str:
+    """A name Windows can create, renamed the way 7-Zip does it: characters Windows doesn't allow
+    become "_" (a ':' would otherwise write an alternate data stream), a trailing dot or space
+    becomes "_", and device names get a "_" in front."""
+    part = _WINDOWS_BAD.sub("_", part)
+    if part[-1] in ". ":
+        part = part.rstrip(". ") + "_"
+    if part.split(".", 1)[0].rstrip(" ").lower() in _DEVICES:
+        part = "_" + part
+    return part
+
+
+_DRIVE = re.compile(r"[A-Za-z]:\Z")  # "C:" as the whole first part: an absolute Windows path
+
+
+def _create(target: Path, counters: dict[str, int]):
+    """Open a new file at target, or at "name (1).ext", "name (2).ext"... when that name is
+    taken (the same name twice in the archive, a folder, a file already there, or only the case
+    differs on Windows). ``counters`` remembers how far each name got, so n copies of a name cost
+    about n tries rather than n*n/2."""
+    key = os.path.normcase(target)
+    stem, suffix, n = target.stem, target.suffix, counters.get(key, 0)
+    while True:
+        path = target.with_name(f"{stem} ({n}){suffix}") if n else target
+        try:
+            f = open(path, "xb")  # noqa: SIM115 - the caller closes it
+        except FileExistsError:
+            pass
+        except (IsADirectoryError, PermissionError):  # a folder, on some systems
+            if not path.is_dir():
+                raise
+        else:
+            counters[key] = n + 1
+            return f
+        n += 1
+
+
+def _folder(path: Path) -> bool:
+    """Make a folder and its parents; False when a file already has one of their names."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except (FileExistsError, NotADirectoryError):
+        return False
+    return True
+
+
+def extract_cpio(archive: bytes | str | os.PathLike | BinaryIO, dest: str | os.PathLike, *,
+                 max_size: int | None = None, max_files: int | None = MAX_FILES,
+                 on_skip=None) -> list[Path]:
     """Unpack a newc CPIO archive (bytes, a path or an open binary file) into the folder
     ``dest``, streaming file data so archives larger than memory work. Nothing lands outside
     ``dest``: leading slashes are dropped (as bsdtar does), names that would still climb out or
-    name a drive are skipped, and so are symbolic links and device files. Files keep their
-    modification times, and hard links each get the file's data. Returns every file and folder
-    written."""
+    start with a drive (``C:``) are skipped, and so are symbolic links and device files. On
+    Windows, other names are made safe the way 7-Zip does it (``a:b`` becomes ``a_b``). Existing
+    files are never overwritten: a name that's taken, by a file or a folder, gets " (1)". A
+    folder, or a file inside one, whose name is already taken by a file is skipped. Files keep
+    their modification times, and hard links each get the file's data, whichever link carries it.
+
+    ``max_size`` caps the bytes written (hard links count each time), so a small archive can't
+    fill the disk, and ``max_files`` caps the members (a million by default; None for no limit).
+    Going over either raises ``PackportError``. ``on_skip(name)`` hears about each member left
+    out. Returns every file and folder written."""
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     root = dest.resolve()
     written: list[Path] = []
-    waiting: dict[tuple, list[Path]] = {}  # hard links seen before the one that carries the data
+    counters: dict[str, int] = {}
+    filled: dict[tuple, tuple[Path, int]] = {}             # hard links: the file with the data
+    waiting: dict[tuple, list[tuple[Path, int]]] = {}      # links seen before it, made after it
+    total = members = 0
+
+    def spend(n: int) -> None:
+        nonlocal total
+        total += n
+        if max_size is not None and total > max_size:
+            raise PackportError(f"The archive unpacks to more than {max_size:,} bytes")
+
+    def link(target: Path, mtime: int, data: tuple[Path, int] | None) -> None:
+        """A hard link, as a copy of the file holding the data (or empty if none did)."""
+        spend(data[1] if data else 0)
+        with _create(target, counters) as out:
+            if data:
+                with open(data[0], "rb") as src:
+                    shutil.copyfileobj(src, out, CHUNK)
+        os.utime(out.name, (mtime, mtime))
+        written.append(Path(out.name))
+
+    def skip(h: _Header) -> None:
+        _data(f, h, _Discard())
+        if on_skip:
+            on_skip(h.name)
+
     with _open(archive) as f:
         for h in _headers(f):
-            rel = h.name.replace("\\", "/").lstrip("/")
-            target = (dest / rel).resolve()
-            if (":" in rel.split("/", 1)[0] or root not in target.parents
-                    or not (stat.S_ISDIR(h.mode) or stat.S_ISREG(h.mode))):
-                _data(f, h, _Discard())
+            members += 1
+            if max_files is not None and members > max_files:
+                raise PackportError(f"The archive has more than {max_files:,} members")
+            parts = [p for p in h.name.replace("\\", "/").split("/") if p not in ("", ".")]
+            first = parts[0] if parts else ""
+            if os.name == "nt":
+                parts = [_windows_name(p) if p != ".." else p for p in parts]
+            target = (dest.joinpath(*parts)).resolve() if parts else root
+            if (not parts or ".." in parts or _DRIVE.match(first)
+                    or root not in target.parents or not (stat.S_ISDIR(h.mode) or stat.S_ISREG(h.mode))):
+                skip(h)
                 continue
             if stat.S_ISDIR(h.mode):
+                if not _folder(target):
+                    skip(h)
+                    continue
                 _data(f, h, _Discard())
-                target.mkdir(parents=True, exist_ok=True)
                 written.append(target)
                 continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with open(target, "wb") as out:
+            if not _folder(target.parent):
+                skip(h)
+                continue
+            key = h.link_key if h.nlink > 1 else None
+            if key and h.size == 0:  # a link whose data comes with another member
+                _data(f, h, _Discard())
+                if key in filled:
+                    link(target, h.mtime, filled[key])
+                else:
+                    waiting.setdefault(key, []).append((target, h.mtime))
+                continue
+            spend(h.size)
+            with _create(target, counters) as out:
                 _data(f, h, out)
+            target = Path(out.name)
             os.utime(target, (h.mtime, h.mtime))
             written.append(target)
-            if h.nlink > 1:
-                if h.size == 0:
-                    waiting.setdefault(h.link_key, []).append(target)
-                else:
-                    for other in waiting.pop(h.link_key, []):
-                        shutil.copy2(target, other)
+            if key:
+                filled[key] = (target, h.size)
+                for other, mtime in waiting.pop(key, []):
+                    link(other, mtime, filled[key])
+    for group in waiting.values():  # links to an empty file, or whose data never came
+        for other, mtime in group:
+            link(other, mtime, None)
     return written
 
 

@@ -32,7 +32,7 @@ Some archive formats are easy to read but have no free way to write them:
 - **Unix compress (`.Z`).** Python's standard library has gzip, bz2 and lzma, but no LZW. 7-Zip reads `.Z` but can't write it.
 - **CPIO.** Python has `tarfile` and `zipfile`, but no `cpio` module. 7-Zip reads CPIO but can't write it.
 
-packport writes all three in about 44 KB of Python with no dependencies, so it installs anywhere Python 3.10+ does and bundles cleanly into a PyInstaller app.
+packport writes all three in about 58 KB of Python source with no dependencies (a 28 KB wheel, about 160 KB once installed with its compiled bytecode; on Windows pip adds a 106 KB `packport.exe` launcher), so it installs anywhere Python 3.10+ does and bundles cleanly into a PyInstaller app.
 
 **RAR without the compressor.** packport writes RAR 4 with every file *stored* (method 0x30). That's the format every RAR reader opens, including old comic book apps that predate RAR 5. Comic pages are JPEG or PNG, which don't compress further anyway: packport writes a 200-page, 100 MB comic in 0.09 s, about the time 7-Zip takes to store the same pages in a ZIP (0.08 s). It's limited by the disk, not by Python.
 
@@ -68,18 +68,22 @@ The RAR writer grew out of a short stored-RAR writer in ConvertAll's test suite,
 - Folders, including empty ones, as directory entries.
 - Unicode names (Japanese, accented letters, emoji, ...) in RAR's Unicode name encoding, with an ASCII stand-in for very old readers. Plain ASCII names are stored as they are.
 - Files over 4 GiB, with the 64-bit size fields.
-- Modification times (DOS format, to 2 seconds), the CRC32 of each file, and the read-only flag.
+- Modification times (DOS format, to 2 seconds), the CRC32 of each file, and the read-only flag (from the permissions, or from the read-only attribute on Windows).
 - Names use Windows conventions (backslashes, host OS "Win32"), as WinRAR on Windows writes them.
 
-**Unix compress**: LZW with codes growing from 9 to 16 bits, block mode with CLEAR, header `1F 9D 90`, and the original's padding at every width change and CLEAR, which decoders depend on. `ZCompressor` and `ZDecompressor` work incrementally, like `zlib.compressobj`. `decompress()` takes a `max_size`, so a tiny hostile file can't claim unlimited memory.
+**Unix compress**: LZW with codes growing from 9 to 16 bits, block mode with CLEAR, header `1F 9D 90`, and the original's padding at every width change and CLEAR, which decoders depend on. `ZCompressor` and `ZDecompressor` work incrementally, like `zlib.compressobj`. `decompress()` returns at most `max_size` bytes (1 GiB unless you say otherwise, `None` for no cap), so a tiny hostile file can't claim unlimited memory; `ZDecompressor` takes a `max_size` too, with no cap by default, since its output comes a piece at a time. The decoder keeps its dictionary as (prefix code, byte) pairs, like the original, so it never holds more than 65,536 entries: a 19 KB hostile stream that expands to 72 MB peaks at 18 MB of memory rather than 73 MB.
 
 **CPIO newc** (`070701`): files, folders, permissions, modification times, the `TRAILER!!!` entry and 4-byte padding. Names are UTF-8. The format's sizes are 32-bit, so files of 4 GiB or more are refused with a clear error.
 
 Not handled: compressed or encrypted RAR, RAR 5, symbolic links and hard links, and old-style CPIO (`070707` and binary). A link to a file is stored as the file it points to. A link to a folder, including a Windows junction, is stored as an empty folder, because links can loop back up the tree. When reading, hard-linked CPIO members each get the file's data.
 
-`extract_cpio(archive, folder)` unpacks a CPIO archive without holding it in memory. Nothing lands outside the folder: leading slashes are dropped (as bsdtar does), names that would still climb out or name a drive are skipped, and so are symbolic links and device files. Files keep their modification times.
+`extract_cpio(archive, folder)` unpacks a CPIO archive without holding it in memory. Nothing lands outside the folder: leading slashes are dropped (as bsdtar does), names that would still climb out or start with a drive (`C:/...`) are skipped, and so are symbolic links and device files. On Windows, other names are made safe the way 7-Zip does it (`a:b` becomes `a_b`, `CON` becomes `_CON`), so nothing is written to an alternate data stream or a device. Existing files are never overwritten: a name that's taken, by a file or a folder, gets ` (1)`. A folder, or a file inside a folder, whose name is already taken by a file is skipped. Hard links each get the file's data, whichever link carries it, and are created only once that data is known. `max_size` caps the bytes written, hard-link copies included, `max_files` caps the members (a million by default, `None` for no limit), and `on_skip(name)` hears about each member left out. Names longer than 64 KiB are refused before they're read. Files keep their modification times.
 
-Damaged archives, bad names and format limits raise `packport.PackportError`. Errors from the file system (a missing or unreadable file) stay `OSError`. A failed write removes the half-written file.
+`read_rar` and `read_cpio` return names exactly as they're stored, so a hostile archive can hand back `../../x`, `/etc/x` or `C:\x`. Never join those onto a folder yourself: unpack CPIO with `extract_cpio`, which makes every name safe, and check RAR names before using them as paths.
+
+Times outside what a format can hold (before 1970, after 2106 for CPIO or 2107 for RAR, or not a number) are clamped to its nearest limit instead of failing the write.
+
+Damaged archives, bad names and format limits raise `packport.PackportError`. That includes a cut-short archive, even one cut exactly between two files: a RAR file needs its end-of-archive block, as a CPIO file needs its `TRAILER!!!`. Errors from the file system (a missing or unreadable file) stay `OSError`. A failed write removes the half-written file.
 
 ## The API
 
@@ -92,13 +96,14 @@ packport.pack(out, sources, fmt=None)          # format from out's extension
 packport.format_of(path) -> str                # "rar", "cbr", "z", "tar.z", "taz" or "cpio"
 
 packport.compress(data, bits=16) -> bytes      # .Z in memory
-packport.decompress(data, max_size=None) -> bytes
-packport.read_rar(data_or_path) -> list[Member]
-packport.read_cpio(data_or_path) -> list[Member]
-packport.extract_cpio(data_path_or_file, folder) -> list[Path]  # streams
+packport.decompress(data, max_size=1 << 30) -> bytes
+packport.read_rar(data_or_path) -> list[Member]    # names as stored: not safe as paths
+packport.read_cpio(data_or_path) -> list[Member]   # names as stored: not safe as paths
+packport.extract_cpio(data_path_or_file, folder, *, max_size=None, max_files=1_000_000,
+                      on_skip=None) -> list[Path]  # streams, makes names safe
 ```
 
-`out` is a path or a writable binary file. `sources` can be:
+`out` is a path or a writable binary file. `sources` can be the following, for every format; `.Z` also takes plain bytes, and needs exactly one file:
 
 - a path or a list of paths. Files keep their name; folders keep their name and include everything inside them, like `7z a` and `tar`.
 - `packport.tree(folder)`: everything inside a folder, without the folder itself.

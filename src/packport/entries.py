@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import stat
 import time
@@ -40,6 +41,8 @@ class Entry:
                 self.mtime = st.st_mtime
             if self.mode is None and os.name != "nt":
                 self.mode = st.st_mode & 0o7777
+            elif self.mode is None and not self.is_dir and not st.st_mode & stat.S_IWRITE:
+                self.mode = 0o444  # the Windows read-only attribute
         if self.mtime is None:
             self.mtime = time.time()
         if self.mode is None:
@@ -62,6 +65,12 @@ class Entry:
 Source = bytes | bytearray | memoryview | str | os.PathLike | None
 Sources = (str | os.PathLike | Entry | Iterable[str | os.PathLike | Entry | tuple[str, Source]]
            | Mapping[str, Source])
+
+
+def clamp_time(t: float, top: int) -> int:
+    """A modification time as whole seconds in 0..top: earlier times (and NaN) become 0, later
+    ones ``top``, so an odd timestamp never stops an archive from being written."""
+    return 0 if math.isnan(t) else int(min(max(t, 0), top))
 
 
 @dataclass

@@ -24,7 +24,16 @@ import time
 import zlib
 from collections import Counter
 
-from .entries import Entry, Member, Output, PackportError, Sources, collect, copy
+from .entries import (
+    Entry,
+    Member,
+    Output,
+    PackportError,
+    Sources,
+    clamp_time,
+    collect,
+    copy,
+)
 
 MARK = b"Rar!\x1a\x07\x00"
 RAR5_MARK = b"Rar!\x1a\x07\x01\x00"
@@ -44,6 +53,8 @@ METHOD_STORE = 0x30
 HOST_WIN32 = 2
 ATTR_READONLY, ATTR_DIRECTORY, ATTR_ARCHIVE = 0x01, 0x10, 0x20
 
+DOS_TIME_TOP = 4354819200  # 2108-01-01 UTC: anything later is stored as the last DOS time
+
 _FILE = struct.Struct("<IIBIIBBHI")  # PACK_SIZE UNP_SIZE HOST_OS FILE_CRC FTIME UNP_VER METHOD NAME_SIZE ATTR
 
 
@@ -56,8 +67,12 @@ def _block(htype: int, flags: int, body: bytes) -> bytes:
 
 
 def dos_time(t: float) -> int:
-    """MS-DOS date and time (local time, 2-second steps, years 1980-2107)."""
-    lt = time.localtime(max(t, 0))
+    """MS-DOS date and time (local time, 2-second steps, years 1980-2107). Times outside that
+    range are clamped to its ends."""
+    try:
+        lt = time.localtime(clamp_time(t, DOS_TIME_TOP))
+    except (OverflowError, OSError):  # before 1970 in local time, on some platforms
+        return 1 << 21 | 1 << 16
     if lt.tm_year < 1980:
         return 1 << 21 | 1 << 16  # 1980-01-01 00:00
     if lt.tm_year > 2107:
@@ -192,7 +207,7 @@ class RarWriter:
         if 7 + _FILE.size + 8 + len(name) > 0xFFFF:  # HEAD_SIZE is 16 bits
             raise PackportError(f"{e.name[:40]}...: the name is too long for a RAR header")
         self._names.add(e.name)
-        attr =ATTR_DIRECTORY if e.is_dir else ATTR_ARCHIVE
+        attr = ATTR_DIRECTORY if e.is_dir else ATTR_ARCHIVE
         if not e.mode & 0o200:
             attr |= ATTR_READONLY
         ftime = dos_time(e.mtime)
@@ -272,7 +287,11 @@ def write_rar(out, sources: Sources) -> list[Entry]:
 
 def read_rar(data: bytes | str | os.PathLike) -> list[Member]:
     """Read a RAR 4 archive whose entries are stored (as written by packport, or by WinRAR with
-    "Store"). Compressed, encrypted and multi-volume archives raise ``PackportError``."""
+    "Store"). Compressed, encrypted and multi-volume archives raise ``PackportError``, and so
+    does one that ends without its end-of-archive block (it was cut short).
+
+    Names come back exactly as stored, so they can be absolute or contain ``..``: never join them
+    onto a folder without checking them."""
     if not isinstance(data, (bytes, bytearray, memoryview)):
         with open(data, "rb") as f:
             data = f.read()
@@ -297,13 +316,13 @@ def read_rar(data: bytes | str | os.PathLike) -> list[Member]:
                 raise PackportError("Damaged RAR block header")
             add = struct.unpack_from("<I", data, pos + 7)[0]
         if htype == HEAD_END:
-            break
+            return out
         if htype == HEAD_MAIN and flags & MHD_ENCRYPTED_HEADERS:
             raise PackportError("This RAR archive is encrypted")
         if htype == HEAD_FILE:
             add = _read_file(data, pos, flags, hsize, out)
         pos += hsize + add
-    return out
+    raise PackportError("RAR archive is cut short (no end-of-archive block)")
 
 
 def _read_file(data: bytes, pos: int, flags: int, hsize: int, out: list[Member]) -> int:

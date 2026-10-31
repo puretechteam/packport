@@ -16,14 +16,18 @@ from __future__ import annotations
 
 import os
 import tarfile
+from array import array
 
-from .entries import CHUNK, Entry, Output, PackportError, Sources, collect
+from .entries import CHUNK, Entry, Output, PackportError, Sources, clamp_time, collect
 
 MAGIC = b"\x1f\x9d"
 BLOCK_MODE = 0x80
 CLEAR = 256
 FIRST = 257          # first free code in block mode
 CHECK_GAP = 10000    # how often (in input bytes) a full dictionary checks whether to start over
+DEFAULT_MAX_SIZE = 1 << 30  # what decompress() returns at most unless told otherwise: 1 GiB
+CACHE_BYTES = 1 << 24       # decoded strings the decoder keeps whole; the rest are rebuilt
+TAR_TIME_TOP = 8 ** 11 - 1  # the largest time a plain tar header holds (the year 2242)
 
 
 class ZCompressor:
@@ -136,8 +140,13 @@ def compress(data: bytes, bits: int = 16) -> bytes:
 
 class ZDecompressor:
     """Incremental decompressor: ``decompress(chunk)`` returns what's ready, ``flush()`` the rest.
-    Damaged input raises ``PackportError``. ``max_size`` caps the output, so a small hostile file
-    can't claim unbounded memory."""
+    Damaged input raises ``PackportError``. ``max_size`` caps the total output (no cap by default,
+    since the caller sees the output a piece at a time).
+
+    The dictionary is kept as (prefix code, byte) pairs, like the original, so it never holds more
+    than 65,536 entries whatever the input. Whole strings are also kept, for speed, until they add
+    up to ``CACHE_BYTES``; longer ones are rebuilt from the pairs. A hostile stream whose strings
+    grow by a byte per code (n*n/2 bytes from 2n) can't make the dictionary itself large."""
 
     def __init__(self, max_size: int | None = None):
         self.max_size = max_size
@@ -160,8 +169,12 @@ class ZDecompressor:
         self.n_bits = 9
         self.maxcode = (1 << 9) - 1
         self.free_ent = self.first
-        self.table: list[bytes] = []
+        self.strings: list[bytes | None] = []  # each code's whole string, None once they don't fit
+        self.prefix = array("H")                # for the codes after that: the code each extends
+        self.suffix = bytearray()               # ... and the byte it adds
+        self.kept = 0                           # output since the reset: the strings are no bigger
         self.prev: bytes | None = None
+        self.prev_code = 0
 
     def decompress(self, data: bytes) -> bytes:
         if self.finished:
@@ -206,10 +219,12 @@ class ZDecompressor:
     def _group(self, group: bytes, out: list) -> int:
         """Decode one group of codes; stops early (dropping the group's padding) at a width
         change or a CLEAR, like the original reader."""
+        if self.kept >= CACHE_BYTES and self.prev is not None:
+            return self._group_pairs(group, out)
         n_bits = self.n_bits
         acc = int.from_bytes(group, "little")
         mask = (1 << n_bits) - 1
-        table, first, prev = self.table, self.first, self.prev
+        strings, first, prev, code = self.strings, self.first, self.prev, self.prev_code
         free_ent, maxcode, maxmaxcode = self.free_ent, self.maxcode, self.maxmaxcode
         size = 0
         for _ in range(len(group) * 8 // n_bits):
@@ -223,12 +238,12 @@ class ZDecompressor:
                 size += 1
                 continue
             if code == CLEAR and self.block_mode:
-                self.table, self.free_ent, self.n_bits, self.maxcode, self.prev = [], first, 9, 511, None
+                self._reset()
                 return size
             if code < 256:
                 entry = bytes((code,))
             elif code < free_ent:
-                entry = table[code - first]
+                entry = strings[code - first]
             elif code == free_ent:
                 entry = prev + prev[:1]
             else:
@@ -236,19 +251,74 @@ class ZDecompressor:
             out.append(entry)
             size += len(entry)
             if free_ent < maxmaxcode:
-                table.append(prev + entry[:1])
+                strings.append(prev + entry[:1])
                 free_ent += 1
             prev = entry
             if free_ent > maxcode and n_bits < self.maxbits:
                 n_bits += 1
                 self.n_bits, self.maxcode = n_bits, (1 << n_bits) - 1
                 break
-        self.prev, self.free_ent = prev, free_ent
+        self.prev, self.prev_code, self.free_ent = prev, code, free_ent
+        self.kept += size
         return size
 
+    def _group_pairs(self, group: bytes, out: list) -> int:
+        """_group once the whole strings fill CACHE_BYTES: new codes are kept as pairs only."""
+        n_bits = self.n_bits
+        acc = int.from_bytes(group, "little")
+        mask = (1 << n_bits) - 1
+        strings, prefix, suffix = self.strings, self.prefix, self.suffix
+        first, prev, prev_code = self.first, self.prev, self.prev_code
+        free_ent, maxcode, maxmaxcode = self.free_ent, self.maxcode, self.maxmaxcode
+        size = 0
+        for _ in range(len(group) * 8 // n_bits):
+            code = acc & mask
+            acc >>= n_bits
+            if code == CLEAR and self.block_mode:
+                self._reset()
+                return size
+            if code < 256:
+                entry = bytes((code,))
+            elif code < free_ent:
+                entry = strings[code - first]
+                if entry is None:
+                    entry = self._rebuild(code)
+            elif code == free_ent:
+                entry = prev + prev[:1]
+            else:
+                raise PackportError("Damaged .Z data (code out of range)")
+            out.append(entry)
+            size += len(entry)
+            if free_ent < maxmaxcode:
+                strings.append(None)
+                prefix.append(prev_code)
+                suffix.append(entry[0])
+                free_ent += 1
+            prev, prev_code = entry, code
+            if free_ent > maxcode and n_bits < self.maxbits:
+                n_bits += 1
+                self.n_bits, self.maxcode = n_bits, (1 << n_bits) - 1
+                break
+        self.prev, self.prev_code, self.free_ent = prev, prev_code, free_ent
+        self.kept += size
+        return size
 
-def decompress(data: bytes, max_size: int | None = None) -> bytes:
-    """Decode a complete ``.Z`` stream."""
+    def _rebuild(self, code: int) -> bytes:
+        """The string for ``code``, walking back through the pairs to one that's kept whole.
+        Each step goes to a lower code, so the walk always ends."""
+        first, strings, prefix, suffix = self.first, self.strings, self.prefix, self.suffix
+        split = first + len(strings) - len(prefix)  # the first code that isn't kept whole
+        tail = bytearray()
+        while code >= split:
+            tail.append(suffix[code - split])
+            code = prefix[code - split]
+        tail.reverse()
+        return (bytes((code,)) if code < first else strings[code - first]) + tail
+
+
+def decompress(data: bytes, max_size: int | None = DEFAULT_MAX_SIZE) -> bytes:
+    """Decode a complete ``.Z`` stream, in memory. Output past ``max_size`` (1 GiB unless given;
+    None for no cap) raises ``PackportError``. For bigger files, stream with ``ZDecompressor``."""
     d = ZDecompressor(max_size)
     return d.decompress(data) + d.flush()
 
@@ -301,7 +371,7 @@ def write_tar_z(out, sources: Sources) -> list[Entry]:
     with ZWriter(out) as z, tarfile.open(fileobj=z, mode="w|", format=tarfile.PAX_FORMAT) as tf:
         for e in entries:
             info = tarfile.TarInfo(e.name)
-            info.mtime = int(e.mtime)
+            info.mtime = clamp_time(e.mtime, TAR_TIME_TOP)
             info.mode = e.mode
             if e.is_dir:
                 info.type = tarfile.DIRTYPE

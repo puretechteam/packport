@@ -107,7 +107,7 @@ def test_extract_streams_without_reading_the_archive_whole(tmp_path):
 def test_extract_keeps_everything_inside_the_folder(tmp_path):
     data = _raw(("../escaped.txt", stat.S_IFREG | 0o644, b"no", 1, 1),
                 ("/abs.txt", stat.S_IFREG | 0o644, b"ok", 1, 2),
-                ("C:evil.txt", stat.S_IFREG | 0o644, b"no", 1, 3),
+                ("C:/evil.txt", stat.S_IFREG | 0o644, b"no", 1, 3),
                 ("link", stat.S_IFLNK | 0o777, b"../../outside", 1, 4),
                 ("dev", stat.S_IFCHR | 0o644, b"", 1, 5),
                 ("dir/../../up.txt", stat.S_IFREG | 0o644, b"no", 1, 6),
@@ -125,6 +125,50 @@ def test_extract_gives_hard_links_the_data():
     with tempfile.TemporaryDirectory() as tmp:
         extract_cpio(data, tmp)
         assert (Path(tmp) / "a").read_bytes() == (Path(tmp) / "b").read_bytes() == b"shared"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows names")
+def test_extract_makes_windows_names_safe(tmp_path):
+    reg = stat.S_IFREG | 0o644
+    data = _raw(("dir/a.txt:stream", reg, b"ads", 1, 1), ("CON", reg, b"con", 1, 2),
+                ("nul.txt", reg, b"nul", 1, 3), ("trailing.", reg, b"dot", 1, 4),
+                ("q?.txt", reg, b"q", 1, 5), ("tab\there", reg, b"tab", 1, 6))
+    dest = tmp_path / "x"
+    extract_cpio(data, dest)
+    got = {p.relative_to(dest).as_posix(): p.read_bytes() for p in dest.rglob("*") if p.is_file()}
+    assert got == {"dir/a.txt_stream": b"ads", "_CON": b"con", "_nul.txt": b"nul", "trailing_": b"dot",
+                   "q_.txt": b"q", "tab_here": b"tab"}
+    assert not (dest / "dir" / "a.txt").exists()  # no alternate data stream on a.txt
+
+
+def test_extract_never_overwrites(tmp_path):
+    reg = stat.S_IFREG | 0o644
+    data = _raw(("a.txt", reg, b"first", 1, 1), ("a.txt", reg, b"second", 1, 2))
+    dest = tmp_path / "x"
+    dest.mkdir()
+    (dest / "keep.txt").write_bytes(b"mine")
+    extract_cpio(data, dest)
+    extract_cpio(_raw(("keep.txt", reg, b"theirs", 1, 3)), dest)
+    assert (dest / "a.txt").read_bytes() == b"first" and (dest / "a (1).txt").read_bytes() == b"second"
+    assert (dest / "keep.txt").read_bytes() == b"mine" and (dest / "keep (1).txt").read_bytes() == b"theirs"
+
+
+def test_extract_max_size_counts_hard_links(tmp_path):
+    # one 1 KB file and 50 hard links to it: 51 KB on disk from a 7 KB archive
+    reg = stat.S_IFREG | 0o644
+    links = [(f"l{i}", reg, b"", 51, 9) for i in range(50)]
+    data = _raw(*links, ("data", reg, b"x" * 1024, 51, 9))
+    extract_cpio(data, tmp_path / "ok", max_size=60_000)
+    with pytest.raises(PackportError, match="more than"):
+        extract_cpio(data, tmp_path / "capped", max_size=10_000)
+
+
+def test_extract_reports_skipped_members(tmp_path):
+    skipped = []
+    extract_cpio(_raw(("../up.txt", stat.S_IFREG | 0o644, b"no", 1, 1),
+                      ("link", stat.S_IFLNK | 0o777, b"/etc", 1, 2),
+                      ("ok.txt", stat.S_IFREG | 0o644, b"ok", 1, 3)), tmp_path / "x", on_skip=skipped.append)
+    assert skipped == ["../up.txt", "link"]
 
 
 def test_extract_damaged_archives_raise_packport_error(tmp_path):
