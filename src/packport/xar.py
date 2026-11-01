@@ -181,6 +181,14 @@ class PkgArchive(XarArchive):
     def __init__(self, source):
         super().__init__(source)
         self.spools = []
+        try:
+            self._expand()
+        except BaseException:  # close() is never called on an archive that didn't open
+            for s in self.spools:
+                s.close()
+            raise
+
+    def _expand(self) -> None:
         from .cpio import CpioArchive
         for item in list(self.members):
             base = item.name.rsplit("/", 1)[-1]

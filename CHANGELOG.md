@@ -2,6 +2,11 @@
 
 Newest first. Each entry is dated by when it landed.
 
+## 2026-11-01: packport 0.3.1, refused RPM and .pkg files close their temporary file
+
+- **Fixed:** an RPM whose payload unpacks but holds no CPIO archive, and a .pkg whose Payload can't be read, were refused as damaged but left their temporary file open until Python got round to it (a `ResourceWarning` on Linux and on Python 3.10 and 3.11). They close it at once now. Found by the 0.3.0 release's CI, which stopped on it, so the `v0.3.0` tag has no release and no packport-native wheels: 0.3.1 is the first release with them. packport-native is 0.3.1 too, with the same decoders as 0.3.0: each packport uses only the packport-native of its own version.
+- **Tests:** 662 (2 new: a refused RPM and a refused .pkg close every temporary file they made; both failed before the fix).
+
 ## 2026-11-01: packport 0.3.0, reading everything ConvertAll used 7-Zip for, with compiled decoders
 
 - **Added:** one way to read every format packport knows. `packport.open(src)` takes a path, a list of volumes, bytes or a binary file, works out the format from the content (never the name), and returns an `Archive` whose `members` list what's inside and whose `files()` hands over each file's data in archive order, so solid archives are unpacked once. `packport.extract(src, folder)` unpacks any of them with `extract_cpio`'s safety rules, plus `on_rename`. `packport.detect(src)` names the format. Encrypted data raises the new `packport.EncryptedError`. `read_rar`, `read_cpio` and `extract_cpio` work as before.

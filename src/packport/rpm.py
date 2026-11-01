@@ -98,9 +98,16 @@ class RpmArchive(Archive):
         except (OSError, EOFError, zlib.error, lzma.LZMAError, ValueError) as e:
             self.spool.close()
             raise PackportError(f"This RPM package's payload is damaged ({e})") from None
+        except BaseException:
+            self.spool.close()
+            raise
         from .archive import Source
         from .cpio import CpioArchive
-        self.inner = CpioArchive(Source(self.spool))
+        try:
+            self.inner = CpioArchive(Source(self.spool))
+        except BaseException:  # not CPIO inside: close() is never called on an archive that didn't open
+            self.spool.close()
+            raise
         for item in self.inner.members:
             name = item.name[2:] if item.name.startswith("./") else item.name.lstrip("/")
             if name:

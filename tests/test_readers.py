@@ -169,14 +169,16 @@ def _rpm_header(tags: list[tuple[int, int, bytes, int]]) -> bytes:
     return b"\x8e\xad\xe8\x01" + bytes(4) + struct.pack(">II", len(tags), len(store)) + index + store
 
 
-def _rpm(payload_files: dict, compressor: str) -> bytes:
-    """An RPM put together from the format's description: lead, signature, header, payload."""
-    buf = io.BytesIO()
-    cpio = packport.CpioWriter(buf)
-    for name, data in payload_files.items():
-        cpio.add(name, data, is_dir=data is None)
-    cpio.close()
-    raw = buf.getvalue()
+def _rpm(payload_files: dict, compressor: str, raw: bytes | None = None) -> bytes:
+    """An RPM put together from the format's description: lead, signature, header, payload (the
+    files as CPIO, or raw as the payload instead)."""
+    if raw is None:
+        buf = io.BytesIO()
+        cpio = packport.CpioWriter(buf)
+        for name, data in payload_files.items():
+            cpio.add(name, data, is_dir=data is None)
+        cpio.close()
+        raw = buf.getvalue()
     packed = {"gzip": gzip.compress, "xz": lzma.compress, "bzip2": __import__("bz2").compress}[compressor](raw)
     lead = b"\xed\xab\xee\xdb\x03\x00" + struct.pack(">hh", 0, 1) + b"demo-1.0-1".ljust(66, b"\0") + \
         struct.pack(">hh", 1, 5) + bytes(16)
@@ -272,6 +274,50 @@ def test_pkg_expands_its_payload_and_scripts(tmp_path):
     assert files_only(contents(tmp_path / "demo.pkg")) == {
         "Payload/Applications/Demo.app/Info.plist": b"<plist/>", "Scripts/postinstall": b"#!/bin/sh\n",
         "PackageInfo": b"<pkg-info/>"}
+
+
+def _tracked_temp_files(monkeypatch) -> list:
+    """Every temporary file packport makes from now on. On Windows a dropped one closes itself
+    without a word, so a leak only showed as a ResourceWarning on Linux."""
+    import tempfile
+    made, real = [], tempfile.TemporaryFile
+
+    def temporary_file(*args, **kwargs):
+        made.append(real(*args, **kwargs))
+        return made[-1]
+    monkeypatch.setattr(tempfile, "TemporaryFile", temporary_file)
+    return made
+
+
+def _pkg(payload: bytes, style: str) -> bytes:
+    """A .pkg (a xar archive) by hand: a Payload stored with the given encoding, and PackageInfo."""
+    heap, files = b"", []
+    for name, data, enc in (("Payload", payload, style), ("PackageInfo", b"<pkg-info/>", "application/octet-stream")):
+        files.append(f'<file id="{len(files) + 1}"><name>{name}</name><type>file</type><mode>0644</mode>'
+                     f'<data><offset>{len(heap)}</offset><length>{len(data)}</length><size>{len(data) * 4}</size>'
+                     f'<encoding style="{enc}"/></data></file>')
+        heap += data
+    toc = ('<?xml version="1.0" encoding="UTF-8"?><xar><toc>' + "".join(files) + "</toc></xar>").encode()
+    packed = zlib.compress(toc)
+    return b"xar!" + struct.pack(">HHQQI", 28, 1, len(packed), len(toc), 0) + packed + heap
+
+
+def test_a_refused_rpm_closes_its_temporary_file(monkeypatch):
+    made = _tracked_temp_files(monkeypatch)
+    rpm = _rpm({}, "gzip", raw=b"not a CPIO archive at all " * 20)  # the payload unpacks; what's in it is bad
+    with pytest.raises(PackportError):
+        packport.open(rpm)
+    assert made and all(f.closed for f in made)
+
+
+def test_a_refused_pkg_closes_its_temporary_files(monkeypatch):
+    made = _tracked_temp_files(monkeypatch)
+    pkg = _pkg(b"\xfd7zXZ\x00 damaged xz data " * 4, "application/x-xz")
+    assert packport.detect(pkg) == "pkg"
+    with pytest.raises(PackportError), packport.open(pkg) as a:
+        for _m, s in a.files():
+            s.read()
+    assert made and all(f.closed for f in made)
 
 
 def test_pbzx_payload():

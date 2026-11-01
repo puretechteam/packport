@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-VERSION = "0.3.0"  # the packport-native this packport is made for (it ships with each release)
+VERSION = "0.3.1"  # the packport-native this packport is made for (it ships with each release)
 
 native = None
 if not os.environ.get("PACKPORT_PURE"):

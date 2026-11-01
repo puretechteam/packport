@@ -4,7 +4,7 @@ Read the archives, installers, disc and disk images 7-Zip reads, and write RAR, 
 
 ```
 pip install git+https://github.com/puretechteam/packport
-pip install https://github.com/puretechteam/packport/releases/download/v0.3.0/packport_native-0.3.0-cp310-abi3-win_amd64.whl
+pip install https://github.com/puretechteam/packport/releases/download/v0.3.1/packport_native-0.3.1-cp310-abi3-win_amd64.whl
 ```
 
 The second line is optional: the wheel for 64-bit Windows (each [release](https://github.com/puretechteam/packport/releases) has Linux and macOS ones too). Without it packport works the same, with its Python decoders.
@@ -169,7 +169,7 @@ For `.Z`, libarchive is much faster too: 20 MB of text took packport 4.5 s to wr
 
 ## How it's tested
 
-The suite has 660 tests, and any warning fails one (4 big-file ones run with `PACKPORT_SLOW=1`, one needs the Ghostscript installer, `PACKPORT_NSIS_SAMPLE`, and three check packport-native against the Python decoders when it's installed), against these oracles:
+The suite has 662 tests, and any warning fails one (4 big-file ones run with `PACKPORT_SLOW=1`, one needs the Ghostscript installer, `PACKPORT_NSIS_SAMPLE`, and three check packport-native against the Python decoders when it's installed), against these oracles:
 
 - **7-Zip 24.09.** Every archive packport reads in the tests was extracted by 7-Zip and compared byte for byte: 145 of libarchive's own test archives (RAR, CAB, 7z, ZIP, LZH; BSD license), 25 of its ISO images, 6 of Apache Commons Compress's (Shrink, Implode, ARJ; Apache License 2.0), dfvfs's disk images (Apache License 2.0), go-diskfs's squashfs image (MIT), and archives 7-Zip itself wrote with every method it has. Where packport and 7-Zip differ on purpose, the test says so and why: links left out, names in old code pages, Rock Ridge names 7-Zip cuts short, system files.
 - **Formats 7-Zip doesn't write.** PPMd's "cut off" mode, big Shrink streams, LZH, ARJ, squashfs and VDI are written by test-only encoders in `tests/` (never shipped), and 7-Zip has to read each back to the original bytes. NTFS's LZNT1 decoder unpacks what Windows' own compressor (`RtlCompressBuffer`) writes; the LZ4 decoder what the lz4 library writes.
