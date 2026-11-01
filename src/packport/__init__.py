@@ -1,9 +1,15 @@
-"""packport: write the archive formats that have no free writer, in pure Python.
+"""packport: read the archives and disc images 7-Zip reads, and write the formats that have no
+free writer, in pure Python.
 
     import packport
+    with packport.open("comic.cbr") as a:              # RAR, 7z, ZIP, CAB, ISO, UDF, ...
+        for item, stream in a.files():
+            ...
+    packport.extract("setup.exe", "out/")              # an NSIS installer, safely unpacked
     packport.write_rar("comic.cbr", "pages/")          # stored RAR 4
     packport.write_z("data.csv.Z", "data.csv")         # Unix compress
     packport.write_cpio("initrd.cpio", ["bin", "etc"])  # newc CPIO
+    packport.write_wim("image.wim", "folder/")         # uncompressed WIM
     packport.pack("out.rar", ["a.txt", "folder"])      # format from the extension
 
 or from a terminal: ``packport pages/ comic.cbr``.
@@ -11,8 +17,11 @@ or from a terminal: ``packport pages/ comic.cbr``.
 
 from __future__ import annotations
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
+from ._accel import accelerated
+from .archive import Archive, EncryptedError, Item, detect, extract
+from .archive import open as open
 from .cpio import CpioWriter, extract_cpio, read_cpio, write_cpio
 from .entries import Entry, Member, PackportError, Sources, collect, tree
 from .lzw import (
@@ -25,17 +34,21 @@ from .lzw import (
     write_z,
 )
 from .rar import RarWriter, read_rar, write_rar
+from .wim import write_wim
 
 FORMATS = {
     "rar": "RAR 4, stored", "cbr": "comic book RAR (RAR 4, stored)",
     "z": "Unix compress (one file)", "tar.z": "tar compressed with Unix compress", "taz": "same as .tar.Z",
-    "cpio": "CPIO, newc",
+    "cpio": "CPIO, newc", "wim": "Windows Imaging (WIM), uncompressed",
 }
 
 __all__ = [
     "FORMATS",
+    "Archive",
     "CpioWriter",
+    "EncryptedError",
     "Entry",
+    "Item",
     "Member",
     "PackportError",
     "RarWriter",
@@ -44,11 +57,15 @@ __all__ = [
     "ZDecompressor",
     "ZWriter",
     "__version__",
+    "accelerated",
     "collect",
     "compress",
     "decompress",
+    "detect",
+    "extract",
     "extract_cpio",
     "format_of",
+    "open",
     "pack",
     "read_cpio",
     "read_rar",
@@ -56,6 +73,7 @@ __all__ = [
     "write_cpio",
     "write_rar",
     "write_tar_z",
+    "write_wim",
     "write_z",
 ]
 
@@ -81,6 +99,8 @@ def pack(out, sources: Sources, fmt: str | None = None) -> None:
         write_cpio(out, sources)
     elif fmt in ("tar.z", "taz"):
         write_tar_z(out, sources)
+    elif fmt == "wim":
+        write_wim(out, sources)
     elif fmt == "z":
         if not isinstance(sources, (bytes, bytearray, memoryview)):
             entries = collect(sources)

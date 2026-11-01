@@ -27,6 +27,25 @@ needs_7z = pytest.mark.skipif(SEVEN_ZIP is None, reason="7-Zip isn't installed")
 needs_bsdtar = pytest.mark.skipif(BSDTAR is None, reason="bsdtar (Windows tar.exe) isn't available")
 needs_unrar = pytest.mark.skipif(CALIBRE_DEBUG is None, reason="calibre (which bundles unrar) isn't installed")
 
+
+def _has_zstd() -> bool:
+    try:
+        from compression import zstd  # Python 3.14
+    except ImportError:
+        try:
+            from backports import zstd  # noqa: F401
+        except ImportError:
+            return False
+    return True
+
+
+needs_zstd = pytest.mark.skipif(not _has_zstd(), reason="no zstd module (pip install backports.zstd, or Python 3.14)")
+
+
+def zstd_marked(names):
+    """Test names, with the ones that need zstd skipped where it isn't installed."""
+    return [pytest.param(n, marks=needs_zstd) if "zstd" in n else n for n in names]
+
 # Every name works with 7-Zip. Windows' tar.exe converts names to the system's ANSI code page and
 # skips any it can't represent (it does the same with zip and tar files made by Python), so its
 # tests use names that fit Windows-1252.

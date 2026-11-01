@@ -18,12 +18,24 @@ HEAD_TYPE, HEAD_FLAGS and HEAD_SIZE.
 
 from __future__ import annotations
 
+import io
 import os
 import struct
 import time
 import zlib
 from collections import Counter
+from pathlib import Path
 
+from .archive import (
+    Archive,
+    Crc32,
+    EncryptedError,
+    Item,
+    Pieces,
+    Stream,
+    reader,
+    stored,
+)
 from .entries import (
     Entry,
     Member,
@@ -34,6 +46,7 @@ from .entries import (
     collect,
     copy,
 )
+from .parallel import ordered
 
 MARK = b"Rar!\x1a\x07\x00"
 RAR5_MARK = b"Rar!\x1a\x07\x01\x00"
@@ -49,6 +62,7 @@ FHD_UNICODE = 0x0200         # FILE_NAME holds a plain name, a zero byte and the
 SKIP_IF_UNKNOWN = 0x4000
 LONG_BLOCK = 0x8000          # a 32-bit ADD_SIZE (here PACK_SIZE) follows; data comes after the header
 
+AHEAD = 16 << 20  # files this small, in a non-solid archive, are decoded ahead in threads
 METHOD_STORE = 0x30
 HOST_WIN32 = 2
 ATTR_READONLY, ATTR_DIRECTORY, ATTR_ARCHIVE = 0x01, 0x10, 0x20
@@ -366,3 +380,228 @@ def _read_file(data: bytes, pos: int, flags: int, hsize: int, out: list[Member])
         mode = attr
     out.append(Member(name, payload, False, from_dos_time(ftime), mode))
     return pack
+
+
+def _sniff(head: bytes, source) -> bool:
+    if head.startswith(MARK):
+        return True
+    return head[:2] == b"MZ" and MARK in source.read_at(0, min(source.size, 1 << 20))  # self-extracting
+
+
+MHD_VOLUME, MHD_SOLID = 0x0001, 0x0008
+FHD_SPLIT_BEFORE, FHD_SPLIT_AFTER, FHD_SOLID = 0x0001, 0x0002, 0x0010
+
+
+def volume_paths(path) -> tuple[Path, list[Path]]:
+    """For a volume of a RAR 4 set: the first volume and the ones after it, by either naming
+    (NAME.part1.rar, NAME.part2.rar, ... or NAME.rar, NAME.r00, NAME.r01, ...)."""
+    import re
+    path = Path(path)
+    m = re.fullmatch(r"(.*\.part)(\d+)(\.rar)", path.name, re.IGNORECASE)
+    if m:
+        stem, digits, ext = m.groups()
+        first = path.with_name(f"{stem}{1:0{len(digits)}d}{ext}")
+        names = (path.with_name(f"{stem}{k:0{len(digits)}d}{ext}") for k in range(2, 100_000))
+    else:
+        m = re.fullmatch(r"(.*)\.(rar|r\d\d|s\d\d)", path.name, re.IGNORECASE)
+        if not m:
+            return path, []
+        first = path.with_name(m.group(1) + ".rar")
+        names = (path.with_name(f"{m.group(1)}.{'rstuvwxyz'[k // 100]}{k % 100:02d}") for k in range(900))
+    if not first.is_file():
+        return path, []
+    rest = []
+    for n in names:
+        if not n.is_file():
+            break
+        rest.append(n)
+    return first, rest
+
+
+@reader("rar", _sniff)
+class RarArchive(Archive):
+    """A RAR 1.5-4.x archive, through ``packport.open``: stored files, and files compressed the
+    RAR 2.9/3.x way (LZ, PPMd and RAR's standard filters), solid or not, across volumes. Older
+    compression (RAR 1.5 and 2.0) is refused with a clear message."""
+
+    def __init__(self, source):
+        volumes = []
+        if source.path is not None:
+            first, rest = volume_paths(source.path)
+            if rest or first != source.path:
+                from .archive import Source
+                if first != source.path:
+                    source.close()
+                    source = Source(first)
+                volumes = [Source(v) for v in rest]
+        super().__init__(source)
+        self.volumes = [source] + volumes
+        self.solid = False
+        carry = None
+        try:
+            for src in self.volumes:
+                carry, more = self._volume(src, carry)
+                if not more:
+                    break
+            if carry is not None:
+                raise PackportError(f"{carry.name} goes on into a volume that isn't there")
+        except BaseException:
+            for v in volumes:
+                v.close()
+            raise
+
+    def _volume(self, src, carry):
+        """Read one volume's headers; returns (the file running on into the next volume, or None;
+        whether the next volume is needed)."""
+        start = 0 if src.read_at(0, 7) == MARK else src.read_at(0, 1 << 20).find(MARK)
+        if start < 0:
+            raise PackportError("This isn't a RAR archive")
+        pos = start + len(MARK)
+        more = False
+        while True:
+            head = src.read_at(pos, 7)
+            if len(head) < 7:
+                if more:  # a volume without an end block: the next one carries on
+                    return carry, True
+                if not head and carry is None:  # the headers end with the file: RAR before 2.0 wrote no end block
+                    return None, False
+                raise PackportError("RAR archive is cut short (no end-of-archive block)")
+            crc, htype, flags, hsize = struct.unpack("<HBHH", head)
+            if hsize < 7:
+                raise PackportError("Damaged RAR block header")
+            block = src.read_at(pos, hsize)
+            if len(block) < hsize:
+                raise PackportError("RAR archive is cut short")
+            if htype in (HEAD_MAIN, HEAD_FILE, HEAD_END) and zlib.crc32(block[2:]) & 0xFFFF != crc:
+                raise PackportError("RAR header checksum doesn't match (the archive is damaged)")
+            add = struct.unpack_from("<I", block, 7)[0] if flags & LONG_BLOCK and hsize >= 11 else 0
+            if htype == HEAD_END:
+                return carry, bool(flags & 0x0001)  # "next volume" end: another follows
+            if htype == HEAD_MAIN:
+                if flags & MHD_ENCRYPTED_HEADERS:
+                    raise EncryptedError("This RAR archive is encrypted")
+                self.solid = self.solid or bool(flags & MHD_SOLID)
+                more = bool(flags & MHD_VOLUME)
+            if htype == HEAD_FILE:
+                add, carry = self._file(src, block, pos, flags, hsize, carry)
+            pos += hsize + add
+
+    def _file(self, src, block: bytes, pos: int, flags: int, hsize: int, carry):
+        body = block[7:]
+        if len(body) < _FILE.size:
+            raise PackportError("Damaged RAR file header")
+        pack, unp, host, fcrc, ftime, ver, method, nsize, attr = _FILE.unpack_from(body)
+        off = _FILE.size
+        if flags & FHD_LARGE:
+            if len(body) < off + 8:
+                raise PackportError("Damaged RAR file header")
+            hi_pack, hi_unp = struct.unpack_from("<II", body, off)
+            pack, unp = pack | hi_pack << 32, unp | hi_unp << 32
+            off += 8
+        if off + nsize > len(body):
+            raise PackportError("Damaged RAR file header")
+        name = decode_name(body[off:off + nsize], bool(flags & FHD_UNICODE))
+        name = name.replace("\\", "/")  # RAR stores backslashes as separators, whatever the system
+        piece = (src, pos + hsize, pack)
+        if flags & FHD_SPLIT_BEFORE and carry is not None and carry.name == name:
+            carry.ref["pieces"].append(piece)
+            carry.ref["crc"] = fcrc
+            return pack, (carry if flags & FHD_SPLIT_AFTER else None)
+        is_dir = flags & FHD_DIRECTORY == FHD_DIRECTORY
+        if host in (0, 1, 2):
+            mode = 0o040755 if is_dir else 0o100444 if attr & ATTR_READONLY else 0o100644
+        else:
+            mode = attr
+        link = None
+        if host == 3 and attr & 0o170000 == 0o120000 and not is_dir:  # a Unix symlink: its data is the target
+            link = src.read_at(pos + hsize, min(pack, 4096)).decode("utf-8", "replace") if method == METHOD_STORE else "?"
+        item = Item(name, 0 if is_dir else unp, is_dir, link, from_dos_time(ftime), mode, bool(flags & FHD_PASSWORD),
+                    ref={"pieces": [piece], "method": method, "version": ver, "crc": fcrc,
+                         "solid": bool(flags & FHD_SOLID), "dictionary": 0x10000 << ((flags >> 5) & 7)})
+        self.members.append(item)
+        return pack, (item if flags & FHD_SPLIT_AFTER else None)
+
+    def _stream(self, item: Item, decoder, packed=None):
+        """item's data as a Stream: stored data straight from the volumes (or packed, its bytes
+        read already), compressed data through decoder (an Unpack29, carried from file to file in
+        a solid archive)."""
+        r = item.ref
+        packed = packed if packed is not None else Pieces(r["pieces"])
+        if r["method"] == METHOD_STORE:
+            chunks = stored(packed, item.size)
+        else:
+            if r["version"] not in (29, 36):
+                raise PackportError(f"{item.name} is compressed the RAR {r['version'] // 10}.{r['version'] % 10} "
+                                    "way, which packport doesn't read (it reads RAR 2.9 and later)")
+            chunks = decoder.unpack(packed, item.size)
+        return Stream(item.name, chunks, item.size, Crc32(r["crc"]))
+
+    def _ahead(self) -> bool:
+        """Whether every file can be decoded on its own, and is small enough to decode ahead."""
+        files = [m for m in self.members if m.is_file and not m.encrypted]
+        compressed = any(m.ref["method"] != METHOD_STORE for m in files)  # stored data is only copied
+        return compressed and len(files) > 1 and all(not m.ref["solid"] and m.size <= AHEAD
+                                      and sum(p[2] for p in m.ref["pieces"]) <= AHEAD for m in files)
+
+    def _files_ahead(self):
+        from .rar3 import Unpack29
+
+        def jobs():
+            for item in self.members:
+                if item.is_dir or item.link is not None:
+                    continue
+                if item.encrypted:
+                    raise EncryptedError(f"{item.name} is encrypted; packport doesn't decrypt")
+                r = item.ref
+                packed = io.BytesIO(Pieces(r["pieces"]).read())
+
+                def job(item=item, packed=packed, r=r):
+                    decoder = Unpack29(max(r["dictionary"], 4 << 20)) if r["method"] != METHOD_STORE else None
+                    try:
+                        return item, self._stream(item, decoder, packed).read()
+                    finally:
+                        if decoder is not None:
+                            decoder.release()
+                yield job
+
+        for item, data in ordered(jobs()):
+            yield item, io.BytesIO(data)
+
+    def _files(self):
+        if self._ahead():
+            yield from self._files_ahead()
+            return
+        from .rar3 import Unpack29
+        decoder = None
+        try:
+            for item in self.members:
+                if item.is_dir or item.link is not None:
+                    continue
+                r = item.ref
+                if item.encrypted:
+                    raise EncryptedError(f"{item.name} is encrypted; packport doesn't decrypt")
+                if r["method"] != METHOD_STORE and (decoder is None or not r["solid"]):
+                    if decoder is not None:
+                        decoder.release()
+                    decoder = Unpack29(max(r["dictionary"], 4 << 20))
+                stream = self._stream(item, decoder)
+                yield item, stream
+                stream.drain()  # a solid archive's next file carries on from this one's end
+        finally:
+            if decoder is not None:
+                decoder.release()
+
+    def open_member(self, item: Item):
+        r = item.ref
+        if r["method"] == METHOD_STORE or not r["solid"]:
+            from .rar3 import Unpack29
+            return self._stream(item, Unpack29(max(r["dictionary"], 4 << 20)))
+        for m, stream in self._files():  # solid data has to be decoded from the start
+            if m is item:
+                return stream
+        raise PackportError(f"{item.name} has no data")
+
+    def close(self) -> None:
+        for v in self.volumes[1:]:
+            v.close()
+        super().close()

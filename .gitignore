@@ -5,3 +5,13 @@ build/
 dist/
 .pytest_cache/
 .ruff_cache/
+.cache/
+*.log
+.env*
+!.env.example
+*.key
+*.pem
+.DS_Store
+.idea/
+scratch/
+native/target/

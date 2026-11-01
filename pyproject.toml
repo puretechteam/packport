@@ -5,21 +5,21 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "packport"
 dynamic = ["version"]
-description = "Write RAR, Unix compress (.Z) and CPIO archives in pure Python. No WinRAR, no dependencies."
+description = "Read RAR, 7z, ZIP, CAB, WIM, ISO, UDF, disk images and more, and write RAR, WIM, .Z and CPIO, in pure Python. No 7-Zip, no dependencies."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Pure Tech" }]
 requires-python = ">=3.10"
 dependencies = []
-keywords = ["rar", "cbr", "compress", "lzw", "cpio", "archive"]
+keywords = ["rar", "cbr", "7z", "zip", "cab", "wim", "iso", "udf", "vhd", "vmdk", "dmg", "squashfs", "compress", "lzw", "cpio", "archive"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: System :: Archiving :: Compression",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.16,<0.17"]
+dev = ["pytest>=8", "ruff>=0.16,<0.17", "backports.zstd>=1.0; python_version < '3.14'", "lz4>=4"]
 
 [project.scripts]
 packport = "packport.__main__:main"
@@ -35,4 +35,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Any warning fails a test: each one is either fixed or listed here with the reason.
+filterwarnings = ["error"]
 markers = ["slow: writes and extracts a file over 4 GB (run with PACKPORT_SLOW=1)"]

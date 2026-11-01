@@ -1,11 +1,18 @@
-"""CPIO archives in the SVR4 "newc" format (magic ``070701``), as used by Linux initramfs and RPM.
+"""CPIO archives: the SVR4 "newc" format (magic ``070701``) as used by Linux initramfs and RPM,
+read and written; the POSIX "odc" format (``070707``) read and written; and the old binary
+format (either byte order) read.
 
-Each member is a 110-byte ASCII header (the magic, then 13 fields of 8 hex digits: inode, mode,
-uid, gid, link count, mtime, file size, device major/minor, rdev major/minor, name size including
-its NUL, checksum), the name and a NUL padded to a multiple of 4 bytes, then the data padded to a
-multiple of 4 bytes. The archive ends with a member named ``TRAILER!!!``. Names are UTF-8.
+newc: each member is a 110-byte ASCII header (the magic, then 13 fields of 8 hex digits: inode,
+mode, uid, gid, link count, mtime, file size, device major/minor, rdev major/minor, name size
+including its NUL, checksum), the name and a NUL padded to a multiple of 4 bytes, then the data
+padded to a multiple of 4 bytes. odc: a 76-byte header of octal fields (device, inode, mode,
+uid, gid, link count, rdev, then an 11-digit mtime, the name size and an 11-digit file size),
+the name and its NUL, then the data, with no padding. Old binary: 26 bytes, thirteen 16-bit
+words in the writer's byte order (the magic 070707 tells which), the mtime and size each as two
+words, high first; name and data padded to an even length. Every archive ends with a member
+named ``TRAILER!!!``. Names are UTF-8.
 
-The format's sizes are 32-bit, so a member can't reach 4 GiB.
+newc sizes are 32-bit, so a member can't reach 4 GiB (odc's reach 8 GiB, old binary's 2 GiB).
 """
 
 from __future__ import annotations
@@ -16,10 +23,12 @@ import os
 import re
 import shutil
 import stat
+import struct
 from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO, NamedTuple
 
+from .archive import Archive, Item, Window, reader
 from .entries import (
     CHUNK,
     Entry,
@@ -34,24 +43,33 @@ from .entries import (
 
 MAGIC = b"070701"
 MAGIC_CRC = b"070702"   # same layout, with a byte-sum checksum of the data
+MAGIC_ODC = b"070707"
 TRAILER = "TRAILER!!!"
 HEADER_SIZE = 110
+ODC_SIZE, BIN_SIZE = 76, 26
+_OCTAL = re.compile(rb"[0-7]{70}")
 MAX_NAME = 1 << 16       # the longest name read or written, in bytes with its NUL (Linux allows 4096)
 MAX_FILES = 1_000_000    # extract_cpio's default limit on members
 _HEX = re.compile(rb"[0-9A-Fa-f]{104}")
 
 
-def _header(ino: int, mode: int, nlink: int, mtime: int, size: int, name: bytes) -> bytes:
+def _header(ino: int, mode: int, nlink: int, mtime: int, size: int, name: bytes, odc: bool = False) -> bytes:
+    if odc:
+        return (MAGIC_ODC + b"%06o%06o%06o%06o%06o%06o%06o%011o%06o%011o" % (
+            0, ino & 0o777777, mode & 0o777777, 0, 0, nlink, 0, mtime, len(name) + 1, size) + name + b"\0")
     fields = (ino, mode, 0, 0, nlink, mtime, size, 0, 0, 0, 0, len(name) + 1, 0)
     head = MAGIC + b"".join(b"%08X" % f for f in fields) + name + b"\0"
     return head + bytes(-len(head) % 4)
 
 
 class CpioWriter:
-    """Write a newc CPIO archive entry by entry; ``out`` is a path or a writable binary file.
-    File data is streamed."""
+    """Write a CPIO archive entry by entry; ``out`` is a path or a writable binary file. newc
+    (the default) or, with ``fmt="odc"``, POSIX odc. File data is streamed."""
 
-    def __init__(self, out):
+    def __init__(self, out, fmt: str = "newc"):
+        if fmt not in ("newc", "odc"):
+            raise PackportError(f"packport writes newc and odc CPIO, not {fmt!r}")
+        self._odc = fmt == "odc"
         self._out = Output(out)
         self._f = self._out.f
         self._ino = 0
@@ -69,25 +87,27 @@ class CpioWriter:
         name = e.name.encode("utf-8")
         if len(name) >= MAX_NAME:
             raise PackportError(f"{e.name[:40]}...: the name is too long for packport's CPIO reader")
-        mtime = clamp_time(e.mtime, 0xFFFFFFFF)
+        mtime = clamp_time(e.mtime, 0o77777777777 if self._odc else 0xFFFFFFFF)
         self._ino += 1
         if e.is_dir:
             self._names.add(e.name)
-            self._f.write(_header(self._ino, stat.S_IFDIR | e.mode & 0o7777, 2, mtime, 0, name))
+            self._f.write(_header(self._ino, stat.S_IFDIR | e.mode & 0o7777, 2, mtime, 0, name, self._odc))
             return
         with e.open() as src:
             size = len(e.source) if isinstance(e.source, bytes) else os.fstat(src.fileno()).st_size
-            if size > 0xFFFFFFFF:
-                raise PackportError(f"{e.name} is {size:,} bytes; CPIO can't hold files of 4 GiB or more")
+            if size > (0o77777777777 if self._odc else 0xFFFFFFFF):
+                limit = "8 GiB" if self._odc else "4 GiB"
+                raise PackportError(f"{e.name} is {size:,} bytes; this CPIO format can't hold files of {limit} or more")
             self._names.add(e.name)
-            self._f.write(_header(self._ino, stat.S_IFREG | e.mode & 0o7777, 1, mtime, size, name))
+            self._f.write(_header(self._ino, stat.S_IFREG | e.mode & 0o7777, 1, mtime, size, name, self._odc))
             copy(src, self._f, size, e.name)
-            self._f.write(bytes(-size % 4))
+            if not self._odc:
+                self._f.write(bytes(-size % 4))
 
     def close(self) -> None:
         if not self._closed:
             self._closed = True
-            self._f.write(_header(0, 0, 1, 0, 0, TRAILER.encode()))
+            self._f.write(_header(0, 0, 1, 0, 0, TRAILER.encode(), self._odc))
             self._out.close()
 
     def __enter__(self):
@@ -101,10 +121,11 @@ class CpioWriter:
             self._out.close(failed=True)
 
 
-def write_cpio(out, sources: Sources) -> list[Entry]:
-    """Write a newc CPIO archive. ``sources`` works as for ``write_rar``. Returns the entries."""
+def write_cpio(out, sources: Sources, fmt: str = "newc") -> list[Entry]:
+    """Write a CPIO archive, newc or (``fmt="odc"``) odc. ``sources`` works as for ``write_rar``.
+    Returns the entries."""
     entries = collect(sources)
-    with CpioWriter(out) as cpio:
+    with CpioWriter(out, fmt) as cpio:
         for e in entries:
             cpio.add_entry(e)
     return entries
@@ -122,29 +143,59 @@ class _Header(NamedTuple):
 
 def _headers(f: BinaryIO) -> Iterator[_Header]:
     """Each member's header, leaving ``f`` at the start of its data. The caller reads or skips
-    exactly ``size`` bytes before asking for the next one. Stops at the TRAILER!!! entry."""
+    exactly ``size`` bytes before asking for the next one. Stops at the TRAILER!!! entry. The
+    first member's magic says which of the formats the archive is in."""
     first = True
+    kind = None
     while True:
-        head = f.read(HEADER_SIZE)
-        if len(head) < HEADER_SIZE:
+        head = f.read(6)
+        if len(head) < 6:
             raise PackportError("CPIO archive is cut short (no TRAILER!!! entry)")
-        magic = head[:6]
-        if magic not in (MAGIC, MAGIC_CRC):
-            if magic == b"070707" or head[:2] in (b"\xc7\x71", b"\x71\xc7"):  # odc, old binary
-                raise PackportError("This is an old-style CPIO archive; packport reads newc")
-            raise PackportError("Not a newc CPIO archive" if first else "Damaged CPIO archive")
-        first = False
-        if not _HEX.fullmatch(head[6:]):
-            raise PackportError("Damaged CPIO header")
-        ino, mode, _uid, _gid, nlink, mtime, size, dev_major, dev_minor, _, _, namesize, check = (
-            int(head[6 + 8 * i:14 + 8 * i], 16) for i in range(13))
+        if head in (MAGIC, MAGIC_CRC):
+            got = "newc"
+        elif head == MAGIC_ODC:
+            got = "odc"
+        elif head[:2] in (b"\xc7\x71", b"\x71\xc7"):
+            got = "bin<" if head[:2] == b"\xc7\x71" else "bin>"
+        else:
+            got = None
+        if got is None or (kind is not None and got != kind):
+            raise PackportError("Not a CPIO archive" if first else "Damaged CPIO archive")
+        kind, first = got, False
+        if kind == "newc":
+            head += f.read(HEADER_SIZE - 6)
+            if len(head) < HEADER_SIZE or not _HEX.fullmatch(head[6:]):
+                raise PackportError("Damaged CPIO header")
+            ino, mode, _uid, _gid, nlink, mtime, size, dev_major, dev_minor, _, _, namesize, check = (
+                int(head[6 + 8 * i:14 + 8 * i], 16) for i in range(13))
+            key, used = (ino, dev_major, dev_minor), HEADER_SIZE
+            checksum = check if head[:6] == MAGIC_CRC else None
+        elif kind == "odc":
+            head += f.read(ODC_SIZE - 6)
+            if len(head) < ODC_SIZE or not _OCTAL.fullmatch(head[6:]):
+                raise PackportError("Damaged CPIO header")
+            widths = (6, 6, 6, 6, 6, 6, 6, 11, 6, 11)
+            values, at = [], 6
+            for w in widths:
+                values.append(int(head[at:at + w], 8))
+                at += w
+            dev, ino, mode, _uid, _gid, nlink, _rdev, mtime, namesize, size = values
+            key, used, checksum = (ino, dev, 0), ODC_SIZE, None
+        else:
+            head += f.read(BIN_SIZE - 6)
+            if len(head) < BIN_SIZE:
+                raise PackportError("CPIO archive is cut short")
+            words = struct.unpack(kind[3] + "13H", head)
+            _magic, dev, ino, mode, _uid, _gid, nlink, _rdev, mt_hi, mt_lo, namesize, sz_hi, sz_lo = words
+            mtime, size = mt_hi << 16 | mt_lo, sz_hi << 16 | sz_lo
+            key, used, checksum = (ino, dev, 0), BIN_SIZE, None
         if namesize < 1:
             raise PackportError("Damaged CPIO header")
         if namesize > MAX_NAME:  # checked before reading it: a hostile size could be 4 GiB
             raise PackportError(f"Damaged CPIO header (a name of {namesize:,} bytes; "
                                 f"packport reads names up to {MAX_NAME:,})")
-        padded = namesize + (-(HEADER_SIZE + namesize) % 4)
-        raw = f.read(padded)
+        pad = {"newc": -(used + namesize) % 4, "odc": 0}.get(kind, namesize % 2)
+        raw = f.read(namesize + pad)
         if len(raw) < namesize:
             raise PackportError("CPIO archive is cut short")
         raw = raw[:namesize].split(b"\0", 1)[0]
@@ -154,9 +205,8 @@ def _headers(f: BinaryIO) -> Iterator[_Header]:
             name = raw.decode("cp437")
         if name == TRAILER:
             return
-        yield _Header(name, mode, mtime, size, nlink, (ino, dev_major, dev_minor),
-                      check if magic == MAGIC_CRC and stat.S_ISREG(mode) else None)
-        f.read(-size % 4)
+        yield _Header(name, mode, mtime, size, nlink, key, checksum if stat.S_ISREG(mode) else None)
+        f.read({"newc": -size % 4, "odc": 0}.get(kind, size % 2))
 
 
 def _data(f: BinaryIO, h: _Header, out: BinaryIO | None = None) -> bytes:
@@ -188,7 +238,8 @@ def _open(src) -> contextlib.AbstractContextManager[BinaryIO]:
 
 
 def read_cpio(data: bytes | str | os.PathLike | BinaryIO) -> list[Member]:
-    """Read a newc (``070701``) or newc-with-checksum (``070702``) CPIO archive. Symbolic links
+    """Read a CPIO archive: newc (``070701``), newc with checksums (``070702``), odc (``070707``) or
+    old binary. Symbolic links
     come back as members whose ``mode`` says so and whose data is the link target. Hard links
     each get the file's data (newc stores it once, with the last link). CPIO doesn't record an
     encoding: names are UTF-8 when they're valid UTF-8, and otherwise read in the DOS code page
@@ -266,7 +317,7 @@ def _folder(path: Path) -> bool:
 def extract_cpio(archive: bytes | str | os.PathLike | BinaryIO, dest: str | os.PathLike, *,
                  max_size: int | None = None, max_files: int | None = MAX_FILES,
                  on_skip=None) -> list[Path]:
-    """Unpack a newc CPIO archive (bytes, a path or an open binary file) into the folder
+    """Unpack a CPIO archive (any format ``read_cpio`` reads; bytes, a path or an open binary file) into the folder
     ``dest``, streaming file data so archives larger than memory work. Nothing lands outside
     ``dest``: leading slashes are dropped (as bsdtar does), names that would still climb out or
     start with a drive (``C:``) are skipped, and so are symbolic links and device files. On
@@ -360,3 +411,39 @@ def extract_cpio(archive: bytes | str | os.PathLike | BinaryIO, dest: str | os.P
 class _Discard:
     def write(self, _chunk: bytes) -> None:
         pass
+
+
+def _sniff(head: bytes, _source) -> bool:
+    return head[:6] in (MAGIC, MAGIC_CRC, MAGIC_ODC) or head[:2] in (b"\xc7\x71", b"\x71\xc7")
+
+
+@reader("cpio", _sniff)
+class CpioArchive(Archive):
+    """A CPIO archive in any of the three formats, through ``packport.open``. Hard links all read
+    the file's data, whichever link carries it; symbolic links have their target as ``link``."""
+
+    def __init__(self, source):
+        super().__init__(source)
+        f = source.f
+        f.seek(0)
+        groups: dict[tuple, list[Item]] = {}
+        for h in _headers(f):
+            at = f.tell()
+            kind = stat.S_IFMT(h.mode)
+            item = Item(h.name, h.size, kind == stat.S_IFDIR, None, float(h.mtime), h.mode, ref=(at, h.size))
+            if kind == stat.S_IFLNK:
+                item.link = f.read(min(h.size, MAX_NAME)).decode("utf-8", "replace")
+                item.size = 0
+            self.members.append(item)
+            if h.nlink > 1 and kind == stat.S_IFREG:
+                groups.setdefault(h.link_key, []).append(item)
+            f.seek(at + h.size)
+        for group in groups.values():
+            carrier = next((m for m in reversed(group) if m.ref[1]), None)
+            if carrier is not None:
+                for m in group:
+                    m.ref, m.size = carrier.ref, carrier.size
+
+    def open_member(self, item: Item):
+        at, size = item.ref
+        return Window(self.source, at, size)

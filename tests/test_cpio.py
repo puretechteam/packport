@@ -64,9 +64,11 @@ def test_files_of_4_gib_are_refused(tmp_path):
     assert not (tmp_path / "big.cpio").exists()
 
 
-def test_reader_refuses_other_cpio_flavours():
-    with pytest.raises(PackportError, match="old-style"):
-        read_cpio(b"070707" + bytes(200))
+def test_reader_refuses_damaged_and_unknown_cpio():
+    with pytest.raises(PackportError, match="Damaged CPIO header"):
+        read_cpio(b"070707" + bytes(200))  # odc, whose fields aren't octal digits
+    with pytest.raises(PackportError, match="Not a CPIO archive"):
+        read_cpio(b"070708" + bytes(200))
     with pytest.raises(PackportError, match="cut short"):
         read_cpio(b"")
 

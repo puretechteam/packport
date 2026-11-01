@@ -1,0 +1,158 @@
+{
+ "test_fuzz_1.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {}
+ },
+ "test_read_format_iso.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {}
+ },
+ "test_read_format_iso_2.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {
+   "A/B": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+   "C/D": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+  }
+ },
+ "test_read_format_iso_3.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {
+   "A/B": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+   "C/D": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+  }
+ },
+ "test_read_format_iso_joliet.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {
+   "hardlink": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+   "long-joliet-file-name.textfile": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+  }
+ },
+ "test_read_format_iso_joliet_by_nero.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {
+   "test/test.txt": "d37b9395c2baf168f977ce9ff9ec007d7270fc84cbf1549324bfc8dfc34333a9"
+  }
+ },
+ "test_read_format_iso_joliet_long.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {
+   "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+   "hardlink": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+  }
+ },
+ "test_read_format_iso_joliet_overlong.iso.Z": {
+  "oracle": "libarchive 3.8.9",
+  "files": {
+   "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+   "hardlink": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+  }
+ },
+ "test_read_format_iso_joliet_rockridge.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {
+   "hardlink": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+   "long-joliet-file-name.textfile": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+  }
+ },
+ "test_read_format_iso_joliet_utf16be_cycle.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {
+   "M/X/C": "01d448afd928065458cf670b60f5a594d735af0172c8d67f22a81680132681ca",
+   "M/Y/D": "01d448afd928065458cf670b60f5a594d735af0172c8d67f22a81680132681ca"
+  }
+ },
+ "test_read_format_iso_joliet_utf16be_overflow.iso": {
+  "oracle": "7-Zip",
+  "files": {
+   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB/CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC/DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD/EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE/F": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+ },
+ "test_read_format_iso_multi_extent.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {
+   "file": "5fcbfb1f3f1ea2e735f39187d91a6f8bc193e3d689a8c8539660c22bc4ccc24e"
+  }
+ },
+ "test_read_format_iso_rockridge.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {
+   "file": "be8246df9f3e322cfe3f54bdf6cceb65a7d8047537c919c6b9ea9020d786c70d",
+   "hardlink": "be8246df9f3e322cfe3f54bdf6cceb65a7d8047537c919c6b9ea9020d786c70d"
+  }
+ },
+ "test_read_format_iso_rockridge_ce.iso.Z": {
+  "oracle": "libarchive 3.8.9",
+  "files": {
+   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "e9477a1fc344ee297ab509f62b55449f3bca5fbd5753ac58ddc9ec55962b2590",
+   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "fe3664d6eed6a7ea39ae5f81e774fd98089d79cc5b3615a702c367bd4132d039",
+   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "1ed9c8cd3b714b093c47f14ddb220ef75314ea1aec13f9653387e781c6c05fc7"
+  }
+ },
+ "test_read_format_iso_rockridge_ce_loop.iso.Z": {
+  "oracle": null,
+  "files": {
+   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "1ed9c8cd3b714b093c47f14ddb220ef75314ea1aec13f9653387e781c6c05fc7",
+   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "fe3664d6eed6a7ea39ae5f81e774fd98089d79cc5b3615a702c367bd4132d039",
+   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "e9477a1fc344ee297ab509f62b55449f3bca5fbd5753ac58ddc9ec55962b2590"
+  }
+ },
+ "test_read_format_iso_rockridge_ce_overflow.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {}
+ },
+ "test_read_format_iso_rockridge_cl_re_control.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {
+   "rr_moved/B/A": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+ },
+ "test_read_format_iso_rockridge_cl_re_cycle.iso.Z": {
+  "oracle": null,
+  "files": {}
+ },
+ "test_read_format_iso_rockridge_new.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {
+   "file": "be8246df9f3e322cfe3f54bdf6cceb65a7d8047537c919c6b9ea9020d786c70d",
+   "hardlink": "be8246df9f3e322cfe3f54bdf6cceb65a7d8047537c919c6b9ea9020d786c70d"
+  }
+ },
+ "test_read_format_iso_rockridge_rr_moved.iso.Z": {
+  "oracle": "libarchive 3.8.9",
+  "files": {
+   "file": "be8246df9f3e322cfe3f54bdf6cceb65a7d8047537c919c6b9ea9020d786c70d",
+   "dir1/dir2/dir3/dir4/dir5/dir6/dir7/dir8/dir9/dir10/deep": "be8246df9f3e322cfe3f54bdf6cceb65a7d8047537c919c6b9ea9020d786c70d"
+  }
+ },
+ "test_read_format_iso_rockridge_sl_leak.iso": {
+  "oracle": null,
+  "files": null
+ },
+ "test_read_format_iso_rockridge_zf_overflow.iso": {
+  "oracle": "7-Zip",
+  "files": {}
+ },
+ "test_read_format_iso_xorriso.iso.Z": {
+  "oracle": "7-Zip",
+  "files": {
+   "empty": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "file": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+   "hardlink": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+   "dir/file2": "167112362adb3b2041c11f7337437872f9d821e57e8c3edd68d87a1d0babd0f5",
+   "dir/file3": "d14f73ffe9efb30f7e7ca5bda314561e07c1e2bb94e2692f9979b2bbe19de341",
+   "dir2/file4": "a6f961466f137118d0c7b1e0454abb88480df2bcf7ab40e6c5c2f1e25e0cfa6c"
+  }
+ },
+ "test_read_format_iso_zisofs.iso.Z": {
+  "oracle": "libarchive 3.8.9",
+  "files": {
+   "file": "be8246df9f3e322cfe3f54bdf6cceb65a7d8047537c919c6b9ea9020d786c70d",
+   "hardlink": "be8246df9f3e322cfe3f54bdf6cceb65a7d8047537c919c6b9ea9020d786c70d"
+  }
+ },
+ "test_read_format_iso_zisofs_overflow.iso": {
+  "oracle": null,
+  "files": null
+ }
+}

@@ -1,0 +1,23 @@
+{
+ "SHRUNK.ZIP": {
+  "TEST1.XML": "1f155fbeed0dc3b21ee30e7a648c98ba1123083b814a58ad852d37447a608f0e",
+  "TEST2.XML": "2402e6ef55b5f8886f6632078f50a23cbc73ece37aac7951e77c2a4098acdf5f"
+ },
+ "imploding-4Kdict-2trees.zip": {
+  "HEADER.TXT": "fdb715b10947e98f8bfb104194f9be0cda1b809391a8dc2100d78a25c06c7812"
+ },
+ "imploding-8Kdict-3trees.zip": {
+  "LICENSE.TXT": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5"
+ },
+ "lorem-ipsum-implode.zip": {
+  "LOREM.TXT": "a00c4f3f36515c96b2faef71c054e7f3e86a4f0f4ed4824cb7c5293bb455d28a"
+ },
+ "bla.arj": {
+  "test1.xml": "416feaf8079d3e5446a6b6282a2200124bb0468fab76b7f9d2ae82c1dd44029b",
+  "test2.xml": "3960a1526e1c4d6b6170a72fc7d73301efb0f2b2e814c059eb33c3451842ab35"
+ },
+ "bla.unix.arj": {
+  "test1.xml": "416feaf8079d3e5446a6b6282a2200124bb0468fab76b7f9d2ae82c1dd44029b",
+  "test2.xml": "3960a1526e1c4d6b6170a72fc7d73301efb0f2b2e814c059eb33c3451842ab35"
+ }
+}

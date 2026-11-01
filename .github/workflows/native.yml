@@ -1,0 +1,103 @@
+name: native
+
+# packport-native's wheels: built for every push and pull request (and checked against the
+# Python decoders), and attached to the GitHub release when a version tag is pushed.
+on:
+  push:
+    tags: ["v*"]
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: universal2-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: native
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: auto
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: native/dist/*.whl
+
+  check:
+    needs: wheels
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: wheels
+          merge-multiple: true
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pip install --no-index --find-links wheels packport-native
+      - name: the tests, with the compiled decoders
+        run: python -m pytest -q
+      - name: the memory tests, with the Python ones (tracemalloc only sees Python's allocations)
+        run: python -m pytest -q tests/test_memory.py
+        env:
+          PACKPORT_PURE: "1"
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --release --manifest-path native/Cargo.toml -- -D warnings
+      - run: cargo test --release --manifest-path native/Cargo.toml --no-default-features
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [wheels, check, lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: wheels
+          merge-multiple: true
+      # a tag alone has no release to attach files to: make one first if the tag doesn't have it yet
+      - name: attach the wheels to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1 ||
+            gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --verify-tag \
+              --title "packport ${GITHUB_REF_NAME#v}" \
+              --notes "What changed: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md)"
+          gh release upload "${GITHUB_REF_NAME}" wheels/*.whl --clobber --repo "${GITHUB_REPOSITORY}"

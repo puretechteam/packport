@@ -1,0 +1,26 @@
+[package]
+name = "packport-native"
+version = "0.3.0"
+edition = "2021"
+license = "MIT"
+authors = ["Pure Tech"]
+description = "Compiled decoders for packport (optional: packport works without them)"
+publish = false
+
+[lib]
+name = "packport_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.29", features = ["abi3-py310"] }
+memchr = "2.8"
+crc32fast = "1.5"
+
+[features]
+extension-module = ["pyo3/extension-module"]
+default = ["extension-module"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

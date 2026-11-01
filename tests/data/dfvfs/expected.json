@@ -1,0 +1,102 @@
+{
+ "fat12.raw": {
+  "a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16",
+  "passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252"
+ },
+ "ext2.raw": {
+  "a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16",
+  "passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252"
+ },
+ "ext4.raw": {
+  "a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16",
+  "passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252"
+ },
+ "ntfs.raw": {
+  "a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252",
+  "a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16",
+  "a_link": "dc42e29927b716afcb1a05ca2df1860fb0d2e7d5b0276f3eca5c7844ab267d71"
+ },
+ "hfsplus.raw": {
+  "passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252",
+  "a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "a_directory/a_resourcefork": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16"
+ },
+ "apfs.raw": {
+  "a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "a_directory/a_resourcefork": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16",
+  "passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252"
+ },
+ "mbr.raw": {
+  "1 ext2/a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "1 ext2/a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16",
+  "1 ext2/passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252",
+  "2 ext4/a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "2 ext4/a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16",
+  "2 ext4/passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252"
+ },
+ "gpt.raw": {
+  "1 ext2/a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "1 ext2/a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16",
+  "1 ext2/passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252",
+  "2 ext4/a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "2 ext4/a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16",
+  "2 ext4/passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252"
+ },
+ "ext2.vhd": {
+  "a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16",
+  "passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252"
+ },
+ "ext2.vhdx": {
+  "a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16",
+  "passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252"
+ },
+ "ext2.vmdk": {
+  "a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16",
+  "passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252"
+ },
+ "ext2.qcow2": {
+  "a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16",
+  "passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252"
+ },
+ "ntfs-parent.vhd": {
+  "System Volume Information/WPSettings.dat": "2bf5ac182fcb7a601e6914c2e76a26cf9444096d9dde0f68d5612b7ea5ad6823"
+ },
+ "ntfs-differential.vhd": {
+  "System Volume Information/WPSettings.dat": "2bf5ac182fcb7a601e6914c2e76a26cf9444096d9dde0f68d5612b7ea5ad6823",
+  "System Volume Information/IndexerVolumeGuid": "60290218c32d6a2e21cc2107aa7fefd1694bc447445b3590a05383a43e881306",
+  "a_directory/a_file": "85a82da241d1a964cf23982b9fc5e65fcc9b13a77f3a0fd438a5d41a45af7d3a",
+  "passwords.txt": "677ff39b3f70e7173580976e587b9ec30c73703d9947a36808b22fe29ed49ab8",
+  "a_directory/another_file": "06da2e38f99f7eb22f5d63381c0f6e451d8bad49c13093e01c1b001a3b36ad05"
+ },
+ "fat-parent.vhdx": {
+  "System Volume Information/WPSettings.dat": "28468019a7f4abf5e3ae050ffe191a3ff3ebd686310a986f1dbfa09d030e99af"
+ },
+ "fat-differential.vhdx": {
+  "System Volume Information/WPSettings.dat": "28468019a7f4abf5e3ae050ffe191a3ff3ebd686310a986f1dbfa09d030e99af",
+  "System Volume Information/IndexerVolumeGuid": "9625f1d8486dcf4b71fac7948cc5d6e9fdc948a2ea13e8e7abf570081df9b036",
+  "a_directory/a_file": "85a82da241d1a964cf23982b9fc5e65fcc9b13a77f3a0fd438a5d41a45af7d3a",
+  "a_directory/another_file": "06da2e38f99f7eb22f5d63381c0f6e451d8bad49c13093e01c1b001a3b36ad05",
+  "passwords.txt": "677ff39b3f70e7173580976e587b9ec30c73703d9947a36808b22fe29ed49ab8"
+ },
+ "hfsplus_zlib.dmg": {
+  "passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252",
+  "a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "a_directory/a_resourcefork": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16"
+ },
+ "apm.dmg": {
+  "passwords.txt": "02a2a6af2f1ecf4720d7d49d640f0d0a269a7ec733e41973bdd34f09dad0e252",
+  "a_directory/a_file": "4a49638d0e1055fd9e4c17fef7fdf4d6ccf892b6d9c2f64164203c4bfb0ec92d",
+  "a_directory/another_file": "c7fbc0e821c0871805a99584c6a384533909f68a6bbe9a2a687d28d9f3b10c16"
+ }
+}

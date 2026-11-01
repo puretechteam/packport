@@ -17,7 +17,7 @@ python -m venv .venv
 .venv\Scripts\ruff check .
 ```
 
-Tests that need 7-Zip, `tar.exe` (bsdtar), gzip or calibre (for RARLAB's unrar) skip when those aren't installed. The multi-gigabyte tests run only with `PACKPORT_SLOW=1`. GitHub Actions runs the tests (Python 3.10 and 3.13, with 7-Zip) and `ruff check` on every pull request.
+Tests that need 7-Zip, `tar.exe` (bsdtar), gzip or calibre (for RARLAB's unrar) skip when those aren't installed. The multi-gigabyte tests run only with `PACKPORT_SLOW=1`. GitHub Actions runs the tests (Python 3.10, 3.11 and 3.13, with 7-Zip as a check on what packport reads) and `ruff check` on every pull request.
 
 - **Write from published format descriptions.** For RAR that means RARLAB's `technote.txt`, never unrar's source, whose license forbids using it to build a RAR writer.
 - **No dependencies.** packport is pure Python with nothing to install, and stays that way.
