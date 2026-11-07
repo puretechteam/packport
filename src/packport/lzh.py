@@ -33,7 +33,6 @@ from .rar import from_dos_time
 
 WINDOW_BITS = {b"lh4": 12, b"lh5": 13, b"lh6": 15, b"lh7": 16}
 STORED = (b"lh0", b"lz4")
-OTHER = (b"lh1", b"lh2", b"lh3", b"lzs", b"lz5", b"lh8", b"lh9", b"lha", b"lhb", b"lhc", b"lhe", b"lhx")
 NT, NC = 19, 510  # code-length symbols; literals and lengths (256 + 254)
 NTFS_EPOCH = 11644473600
 SFX_SEARCH = 1 << 16

@@ -21,7 +21,7 @@ from ..entries import PackportError
 from . import Extents
 
 HFS_EPOCH = 2082844800  # seconds from 1904 to 1970
-ROOT_PARENT, ROOT = 1, 2
+ROOT = 2
 FOLDER, FILE = 1, 2
 PRIVATE = "\0\0\0\0HFS+ Private Data"
 HIDDEN = {PRIVATE, ".HFS+ Private Directory Data\r", ".journal", ".journal_info_block", ".Trashes",

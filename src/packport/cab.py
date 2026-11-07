@@ -70,7 +70,7 @@ class _Cabinet:
         head = src.read_at(0, 36)
         if len(head) < 36 or head[:4] != MAGIC:
             raise PackportError("This isn't a cabinet file")
-        (_r1, self.size, _r2, files_at, _r3, _minor, _major, n_folders, n_files, flags, self.set_id,
+        (_r1, self.size, _r2, files_at, _r3, _minor, _major, n_folders, n_files, flags, _set_id,
          self.index) = struct.unpack_from("<IIIIIBBHHHHH", head, 4)
         pos = 36
         res_header = res_folder = res_data = 0

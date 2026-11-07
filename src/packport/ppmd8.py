@@ -13,7 +13,6 @@ packport-native has the same model in Rust (Ppmd8Decoder), used in its place whe
 
 from __future__ import annotations
 
-import io
 from collections.abc import Iterator
 
 from . import entries
@@ -36,7 +35,7 @@ from .ppmd import (
 
 EMPTY = 0xFFFFFFFF
 RESTART, CUT_OFF = 0, 1
-MIN_ORDER, MAX_ORDER = 2, 16
+MIN_ORDER = 2
 NS2INDX8 = list(range(5))
 _m, _k = 5, 1
 for _i in range(5, 260):
@@ -825,11 +824,6 @@ class Ppmd8:
             see[0] = (see[0] + freq_sum) & 0xFFFF
             for s in ps:
                 mask[mem[s]] = 0
-
-
-def decode_zip(data: bytes, size: int, name: str) -> bytes:
-    """A ZIP member packed with method 98 (see decode_zip_iter), whole."""
-    return b"".join(decode_zip_iter(io.BytesIO(data), size, name))
 
 
 def decode_zip_iter(raw, size: int, name: str) -> Iterator[bytes]:

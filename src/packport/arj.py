@@ -185,11 +185,6 @@ def _groups(bits: _Bits, width: int, top: int) -> int:
     return plus + bits.get(width)
 
 
-def fastest(data: bytes, size: int) -> bytes:
-    """ARJ method 4."""
-    return b"".join(fastest_iter(data, size))
-
-
 def fastest_iter(data, size: int) -> Iterator[bytes]:
     """ARJ method 4 (data: bytes or a readable), a piece at a time."""
     if native is not None:

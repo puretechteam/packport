@@ -73,10 +73,6 @@ class _Bits:
         return out
 
 
-def unshrink(data: bytes, size: int) -> bytes:
-    return b"".join(unshrink_iter(data, size))
-
-
 def unshrink_iter(data, size: int) -> Iterator[bytes]:
     """Shrink (bytes or a readable): size bytes, a piece at a time."""
     bits = _Bits(data)
@@ -182,10 +178,6 @@ def _read(bits: _Bits, table: dict[tuple[int, int], int]) -> int:
         if v is not None:
             return v
     raise PackportError("The archive is damaged (an Implode code)")
-
-
-def explode(data: bytes, size: int, flags: int) -> bytes:
-    return b"".join(explode_iter(data, size, flags))
 
 
 def explode_iter(data, size: int, flags: int) -> Iterator[bytes]:

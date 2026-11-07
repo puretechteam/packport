@@ -13,7 +13,6 @@ from __future__ import annotations
 from .entries import PackportError
 
 UNIT_SIZE = 12
-MAX_O = 64
 MAX_MEMORY = 1 << 31  # 7-Zip's largest PPMd model (its mem= setting goes up to 2 GB)
 MAX_FREQ = 124
 INT_BITS, PERIOD_BITS = 7, 7

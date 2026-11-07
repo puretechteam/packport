@@ -426,48 +426,7 @@ class LzxDecoder:
         return data
 
 
-PyLzxDecoder = LzxDecoder  # the pure-Python decoder, kept for when the compiled one isn't there
 if native is not None:
     LzxDecoder = native.LzxDecoder
 
 
-def compress_stored(data: bytes) -> bytes:
-    """LZX made of uncompressed blocks only (no E8 translation): what a LIT writer can always use."""
-    out = bytearray()
-    bits = []  # (value, width) pending before the first byte-aligned block
-
-    def flush_bits(pairs):
-        buf = 0
-        n = 0
-        words = bytearray()
-        for value, width in pairs:
-            buf = (buf << width) | value
-            n += width
-            while n >= 16:
-                word = (buf >> (n - 16)) & 0xFFFF
-                words += struct.pack("<H", word)
-                n -= 16
-        if n:
-            word = (buf << (16 - n)) & 0xFFFF
-            words += struct.pack("<H", word)
-        return words
-
-    pos = 0
-    first = True
-    while pos < len(data) or first:
-        chunk = data[pos:pos + FRAME]
-        pairs = []
-        if first:
-            pairs.append((0, 1))  # no E8 translation
-            first = False
-        pairs += [(3, 3), (len(chunk) >> 16, 8), ((len(chunk) >> 8) & 0xFF, 8), (len(chunk) & 0xFF, 8)]
-        out += flush_bits(pairs)
-        out += struct.pack("<III", 1, 1, 1)
-        out += chunk
-        if len(chunk) & 1:
-            out += b"\0"
-        pos += len(chunk)
-        if not chunk:
-            break
-    del bits
-    return bytes(out)

@@ -426,14 +426,6 @@ class Blake2sp:
         return root.digest()
 
 
-def blake2sp(data_chunks) -> bytes:
-    """BLAKE2sp of the data in data_chunks."""
-    h = Blake2sp()
-    for chunk in data_chunks:
-        h.update(chunk)
-    return h.digest()
-
-
 class _Checks:
     """A RAR 5 file's CRC-32 and BLAKE2sp hash (either may be missing), checked at its end."""
 

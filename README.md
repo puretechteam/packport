@@ -4,7 +4,7 @@ Read the archives, installers, disc and disk images 7-Zip reads, and write RAR, 
 
 ```
 pip install git+https://github.com/puretechteam/packport
-pip install https://github.com/puretechteam/packport/releases/download/v0.3.1/packport_native-0.3.1-cp310-abi3-win_amd64.whl
+pip install https://github.com/puretechteam/packport/releases/download/v0.3.2/packport_native-0.3.2-cp310-abi3-win_amd64.whl
 ```
 
 The second line is optional: the wheel for 64-bit Windows (each [release](https://github.com/puretechteam/packport/releases) has Linux and macOS ones too). Without it packport works the same, with its Python decoders.
@@ -44,7 +44,7 @@ Some formats are easy to read but have no free way to write them, and packport w
 - **CPIO**, which Python has no module for.
 - **WIM**, which only Windows' DISM and wimlib write.
 
-packport is about 520 KB of Python source with no dependencies (about 160 KB zipped). Zstandard members need `compression.zstd` (Python 3.14) or `backports.zstd`; everything else is the standard library.
+packport is about 570 KB of Python source with no dependencies (about 175 KB zipped). Zstandard members need `compression.zstd` (Python 3.14) or `backports.zstd`; everything else is the standard library.
 
 ## What it reads
 
