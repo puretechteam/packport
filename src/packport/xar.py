@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import bz2
 import calendar
+import collections
 import io
 import lzma
 import struct
@@ -24,7 +25,7 @@ import zlib
 from xml.etree import ElementTree
 
 from .archive import Archive, Item, Source, Window, reader
-from .entries import CHUNK, PackportError
+from .entries import CHUNK, MAX_ITEMS, PackportError, TooBig, spool_limit, too_big
 
 MAGIC = b"xar!"
 MAX_TOC = 64 << 20  # bytes of XML table of contents read; real ones are a few KB per file
@@ -112,9 +113,9 @@ class XarArchive(Archive):
     def __init__(self, source):
         super().__init__(source)
         toc, self.heap = _toc(source)
-        todo = [(f, "", 0) for f in toc.findall("file")]
+        todo = collections.deque((f, "", 0) for f in toc.findall("file"))
         while todo:
-            el, parent, depth = todo.pop(0)
+            el, parent, depth = todo.popleft()
             if depth > MAX_DEPTH:
                 raise PackportError("This xar archive is damaged (its folders nest too deep)")
             name = _name(el).replace("/", "_")
@@ -142,7 +143,9 @@ class XarArchive(Archive):
                 item.ref = (self.heap, 0, "")
             if kind in ("file", "directory", "symlink"):
                 self.members.append(item)
-            todo += [(c, path, depth + 1) for c in el.findall("file")]
+                if len(self.members) > MAX_ITEMS:
+                    raise PackportError(f"This xar archive lists more than {MAX_ITEMS:,} files (it's damaged)")
+            todo.extend((c, path, depth + 1) for c in el.findall("file"))
 
     def open_member(self, item: Item):
         at, length, style = item.ref
@@ -151,27 +154,44 @@ class XarArchive(Archive):
         return io.BytesIO(_decoded(self.source.read_at(at, length), style, item.size))
 
 
-def pbzx(raw) -> bytes:
-    """Apple's pbzx stream: 'pbzx', a chunk size, then (flags, length, xz data or plain bytes)."""
+def pbzx(raw, limit: int | None = None):
+    """Apple's pbzx stream: 'pbzx', a chunk size, then (flags, length, xz data or plain bytes).
+    The unpacked data, a piece at a time (each at most CHUNK bytes), limit bytes at most."""
     if raw.read(4) != b"pbzx":
         raise PackportError("This package's payload is damaged (not pbzx)")
     raw.read(8)
-    out = bytearray()
+    got = 0
     while True:
         head = raw.read(16)
         if len(head) < 16:
-            return bytes(out)
+            return
         _flags, length = struct.unpack(">QQ", head)
         chunk = raw.read(length)
         if len(chunk) < length:
             raise PackportError("This package's payload is cut short")
-        if chunk[:6] == b"\xfd7zXZ\x00":
-            try:
-                out += lzma.LZMADecompressor().decompress(chunk)
-            except lzma.LZMAError as e:
-                raise PackportError(f"This package's payload is damaged ({e})") from None
+        if chunk[:6] != b"\xfd7zXZ\x00":
+            pieces = [chunk]
         else:
-            out += chunk
+            d = lzma.LZMADecompressor()
+
+            def unpacked(d=d, chunk=chunk):
+                data = chunk
+                while not d.eof:
+                    try:
+                        out = d.decompress(data, CHUNK)
+                    except lzma.LZMAError as e:
+                        raise PackportError(f"This package's payload is damaged ({e})") from None
+                    data = b""
+                    if out:
+                        yield out
+                    elif d.needs_input:
+                        return
+            pieces = unpacked()
+        for piece in pieces:
+            got += len(piece)
+            if limit is not None and got > limit:
+                raise too_big("This package's payload", limit)
+            yield piece
 
 
 @reader("pkg", _sniff_pkg, first=True)  # a .pkg is a xar archive too: tried before plain xar
@@ -194,14 +214,16 @@ class PkgArchive(XarArchive):
             base = item.name.rsplit("/", 1)[-1]
             if base not in ("Payload", "Scripts") or not item.is_file:
                 continue
-            spool = tempfile.TemporaryFile()  # noqa: SIM115 - closed by close()
+            spool = tempfile.TemporaryFile()
             self.spools.append(spool)
             stream = XarArchive.open_member(self, item)
             head = stream.read(6)
             stream.seek(0)
+            limit, got = spool_limit(self.source, item.ref[1]), 0
             try:
                 if head[:4] == b"pbzx":
-                    spool.write(pbzx(stream))
+                    for piece in pbzx(stream, limit):
+                        spool.write(piece)
                 else:
                     import gzip
                     unpacked = gzip.GzipFile(fileobj=stream) if head[:2] == b"\x1f\x8b" else stream
@@ -209,8 +231,13 @@ class PkgArchive(XarArchive):
                         chunk = unpacked.read(CHUNK)
                         if not chunk:
                             break
+                        got += len(chunk)
+                        if got > limit:
+                            raise too_big("This package's payload", limit)
                         spool.write(chunk)
                 inner = CpioArchive(Source(spool))
+            except TooBig:
+                raise
             except (OSError, EOFError, zlib.error, PackportError):
                 continue  # not a CPIO payload: it stays as the file it is
             self.members.remove(item)

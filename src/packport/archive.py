@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import builtins
 import contextlib
+import errno
 import io
 import lzma
 import os
+import shutil
 import stat
 import struct
 import threading
@@ -44,7 +46,7 @@ def _zstd_error() -> tuple:
 
 # What a damaged archive can make the parsers and decompressors raise. Readers give clear messages
 # for what they check; open() and files() turn anything that still slips through into PackportError.
-DAMAGED = (struct.error, IndexError, KeyError, ValueError, OverflowError, EOFError, RecursionError, MemoryError,
+DAMAGED = (struct.error, IndexError, KeyError, ValueError, ArithmeticError, EOFError, RecursionError, MemoryError,
            zlib.error, lzma.LZMAError, UnicodeError, *_zstd_error())
 
 
@@ -78,13 +80,13 @@ class Source:
         if isinstance(src, (bytes, bytearray, memoryview)):
             self.f: BinaryIO = io.BytesIO(bytes(src))
         elif isinstance(src, (list, tuple)):
-            parts = [builtins.open(p, "rb") for p in src]  # noqa: SIM115 - closed by close()
+            parts = [builtins.open(p, "rb") for p in src]
             self.owned = parts
             self.f = _Joined(parts)
         elif hasattr(src, "read"):
             self.f = src
         else:
-            self.f = builtins.open(src, "rb")  # noqa: SIM115 - closed by close()
+            self.f = builtins.open(src, "rb")
             self.owned = [self.f]
         self.f.seek(0, 2)
         self.size = self.f.tell()
@@ -93,6 +95,7 @@ class Source:
     def read_at(self, offset: int, n: int) -> bytes:
         if offset < 0 or n < 0 or offset > self.size:
             raise PackportError("The archive is damaged (a read past its end)")
+        n = min(n, self.size - offset)  # a length from a damaged header never sizes the buffer
         with self.lock:
             self.f.seek(offset)
             return self.f.read(n)
@@ -166,6 +169,8 @@ class Archive:
             yield from self._files()
         except DAMAGED as e:
             raise PackportError(f"The archive is damaged ({type(e).__name__}: {e})") from None
+        except OSError as e:  # a volume or disk next to it that can't be opened, too many files open
+            raise PackportError(f"The archive couldn't be read ({type(e).__name__}: {e})") from None
 
     def _files(self) -> Iterator[tuple[Item, BinaryIO]]:
         for item in self.members:
@@ -428,7 +433,7 @@ def reader(fmt: str, sniff: Callable[[bytes, Source], bool], first: bool = False
 
 
 def _load_readers() -> None:
-    from . import (  # noqa: F401 - each registers its readers
+    from . import (
         arformat,
         arj,
         cab,
@@ -460,15 +465,22 @@ def detect(src) -> str | None:
         source.close()
 
 
-def open(src, fmt: str | None = None) -> Archive:
+def open(src, fmt: str | None = None, *, max_size: int | None | entries._Default = entries.DEFAULT) -> Archive:
     """Open an archive: a path, a list of volume paths (read as one, in order), bytes, or a
-    seekable binary file. The format comes from the content unless ``fmt`` says."""
+    seekable binary file. The format comes from the content unless ``fmt`` says.
+
+    Some formats are unpacked into a temporary file as they open (an RPM's payload, a solid
+    NSIS installer, a .pkg's Payload) so their members can be read in any order. That stops at
+    ``max_size`` bytes, or when none is given at 200 times the archive's size (at least 64 MB):
+    more than that from so little is a bomb, made to fill the disk. ``max_size=None`` says there
+    is no limit."""
     _load_readers()
     if isinstance(src, (str, os.PathLike)) and fmt is None and not str(src).lower().endswith((".rar", ".r00")):
         volumes = split_volumes(Path(src))
         if volumes:
             src = volumes
     source = Source(src)
+    source.max_size = max_size
     try:
         head = source.read_at(0, 1 << 16)
         for name, sniff, cls in _READERS:
@@ -477,6 +489,12 @@ def open(src, fmt: str | None = None) -> Archive:
     except DAMAGED as e:
         source.close()
         raise PackportError(f"The archive is damaged ({type(e).__name__}: {e})") from None
+    except PackportError:
+        source.close()
+        raise
+    except OSError as e:  # a volume or parent disk next to it that can't be opened, say
+        source.close()
+        raise PackportError(f"The archive couldn't be read ({type(e).__name__}: {e})") from None
     except BaseException:
         source.close()
         raise
@@ -514,16 +532,36 @@ def split_volumes(path: Path) -> list[Path] | None:
 
 # ---- unpacking safely
 
-def extract(src, dest: str | os.PathLike, *, fmt: str | None = None, max_size: int | None = None,
+FREE = "free"  # extract()'s default max_size: the free space on dest's drive, less a margin
+MARGIN = 1 << 30  # what extract() leaves free on the drive by default (or a tenth of it, if less)
+
+
+def free_space(dest: str | os.PathLike) -> int:
+    """How much extract() writes into dest by default: the drive's free space less a margin (1 GB,
+    or a tenth of the free space when that is less), so a bomb stops before the disk is full."""
+    free = shutil.disk_usage(dest).free
+    return max(free - min(MARGIN, free // 10), 0)
+
+
+def _bad_name(e: OSError) -> bool:
+    """Whether an error making a file or folder is about its name (too long, characters the file
+    system refuses), not the disk (full, read-only), so the member can be skipped."""
+    return e.errno in (errno.ENAMETOOLONG, errno.EINVAL) or getattr(e, "winerror", None) in (3, 123, 206)
+
+
+def extract(src, dest: str | os.PathLike, *, fmt: str | None = None, max_size: int | None | str = FREE,
             max_files: int | None = 1_000_000, on_skip: Callable[[str], None] | None = None,
             on_rename: Callable[[str, Path], None] | None = None) -> list[Path]:
     """Unpack any archive packport reads into ``dest``, with ``extract_cpio``'s rules: nothing
     lands outside ``dest`` (leading slashes dropped; names that climb out or start with a drive
     skipped, and so are links and devices), Windows-safe names (``a:b`` becomes ``a_b``, ``CON``
     becomes ``_CON``), existing files never overwritten (a taken name gets " (1)"), ``max_size``
-    bytes and ``max_files`` members at most. ``on_skip(name)`` hears about each member left
-    out, ``on_rename(name, path)`` about each that lands under another name. An encrypted file
-    raises ``EncryptedError``. Returns every file and folder written."""
+    bytes and ``max_files`` members at most. ``max_size`` is by default what the drive has free
+    less a margin (``free_space(dest)``); None means no limit. A file whose data turns out
+    damaged part-way is removed, not left half-written. ``on_skip(name)`` hears about each
+    member left out (also one whose name the file system refuses), ``on_rename(name, path)``
+    about each that lands under another name. An encrypted file raises ``EncryptedError``.
+    Returns every file and folder written."""
     from .cpio import _DRIVE, _create, _folder, _windows_name
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
@@ -531,7 +569,14 @@ def extract(src, dest: str | os.PathLike, *, fmt: str | None = None, max_size: i
     written: list[Path] = []
     counters: dict[str, int] = {}
     total = 0
-    with open(src, fmt) as archive:
+    # open()'s limit on what it unpacks ahead: the caller's own (None: none), and open()'s default
+    # (200 times the archive's size) when they asked for the free-space default
+    spool = max_size
+    if max_size == FREE:
+        max_size, spool = free_space(dest), entries.DEFAULT
+    elif isinstance(max_size, str):
+        raise ValueError(f"max_size must be a number of bytes, None or {FREE!r}")
+    with open(src, fmt, max_size=spool) as archive:
         if max_files is not None and len(archive.members) > max_files:
             raise PackportError(f"The archive has more than {max_files:,} members")
         declared = sum(m.size for m in archive.members if m.is_file)
@@ -560,8 +605,15 @@ def extract(src, dest: str | os.PathLike, *, fmt: str | None = None, max_size: i
         def folder(path: Path) -> bool:
             if path in made:
                 return True
-            if not _folder(path):
+            try:
+                if not _folder(path):
+                    return False
+            except ValueError:  # a NUL in the name
                 return False
+            except OSError as e:
+                if _bad_name(e):
+                    return False
+                raise
             made.add(path)
             return True
 
@@ -578,20 +630,38 @@ def extract(src, dest: str | os.PathLike, *, fmt: str | None = None, max_size: i
                     written.append(target)
             elif not item.is_file:
                 skip(item)  # links, devices
+        handed: set[int] = set()
         for item, stream in archive.files():
+            handed.add(id(item))
             target = place(item)
             if target is None or not folder(target.parent):
                 skip(item)
                 continue
-            with _create(target, counters) as out:
-                while True:
-                    chunk = stream.read(CHUNK)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if max_size is not None and total > max_size:
-                        raise PackportError(f"The archive unpacks to more than {max_size:,} bytes")
-                    out.write(chunk)
+            try:
+                out = _create(target, counters)
+            except ValueError:  # a NUL in the name
+                skip(item)
+                continue
+            except OSError as e:
+                if not _bad_name(e):
+                    raise
+                skip(item)
+                continue
+            with out:
+                try:
+                    while True:
+                        chunk = stream.read(CHUNK)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if max_size is not None and total > max_size:
+                            raise PackportError(f"The archive unpacks to more than {max_size:,} bytes")
+                        out.write(chunk)
+                except BaseException:  # damaged part-way, too big, stopped: no half-written file stays
+                    out.close()
+                    with contextlib.suppress(OSError):
+                        os.unlink(out.name)
+                    raise
             path = Path(out.name)
             with contextlib.suppress(OSError, ValueError, OverflowError):
                 if item.mtime:
@@ -599,4 +669,7 @@ def extract(src, dest: str | os.PathLike, *, fmt: str | None = None, max_size: i
             written.append(path)
             if on_rename and (path.name != item.name.replace("\\", "/").rsplit("/", 1)[-1]):
                 on_rename(item.name, path)
+        for item in archive.members:  # a file the reader couldn't give (a copy of a file that isn't there)
+            if item.is_file and id(item) not in handed:
+                skip(item)
     return written

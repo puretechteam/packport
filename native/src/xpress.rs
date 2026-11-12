@@ -13,7 +13,9 @@ const BLOCK: usize = 65536;
 fn run(data: &[u8], size: usize) -> Res<Vec<u8>> {
     let n = data.len();
     let at = |i: usize| -> u32 { *data.get(i).unwrap_or(&0) as u32 };
-    let mut out: Vec<u8> = Vec::with_capacity(size);
+    let mut out: Vec<u8> = Vec::new();
+    // size comes from the archive's header: a failed allocation is damage, not an abort
+    out.try_reserve_exact(size).map_err(|_| Damage::new("The data is damaged (an XPRESS size too big to hold)"))?;
     let mut pos = 0usize;
     while out.len() < size {
         if pos + 256 > n {
@@ -69,6 +71,8 @@ fn run(data: &[u8], size: usize) -> Res<Vec<u8>> {
                 length += 15;
             }
             length += 3;
+            // a 32-bit length can say gigabytes: only what's left of size is ever copied
+            length = length.min(size - out.len());
             let mut offset = 1usize << log2;
             if log2 > 0 {
                 offset |= (bits >> (32 - log2)) as usize;

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import stat
+import sys
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -16,6 +17,41 @@ CHUNK = 1 << 20
 
 class PackportError(Exception):
     """Raised for anything packport can't write or read: bad names, damaged archives, limits."""
+
+
+MAX_ITEMS = 2_000_000  # members a reader lists at most: more, from a damaged or hostile file, is refused
+SPOOL_RATIO, SPOOL_FLOOR = 200, 64 << 20
+
+
+class _Default:
+    """What ``max_size`` is when the caller didn't pass one (None is then a limit of their own: none)."""
+
+    def __repr__(self):
+        return "DEFAULT"
+
+
+DEFAULT = _Default()
+
+
+def spool_limit(source, packed: int) -> int:
+    """How much a reader may unpack ahead into a temporary file (an RPM's payload, a solid NSIS
+    installer, a .pkg's Payload) from packed bytes: the caller's ``open(max_size=...)`` (None: no
+    limit), or, when none was given, 200 times the packed size and at least 64 MB. Real archives
+    stay far below that; a bomb (zeros compressed 1000:1 and more) is stopped there instead of
+    filling the disk."""
+    given = getattr(source, "max_size", DEFAULT)
+    if given is DEFAULT:
+        return max(SPOOL_FLOOR, SPOOL_RATIO * packed)
+    return sys.maxsize if given is None else given
+
+
+class TooBig(PackportError):
+    """More data than a limit allows: a bomb, or a damaged size."""
+
+
+def too_big(what: str, limit: int) -> TooBig:
+    return TooBig(f"{what} unpacks to more than {limit:,} bytes, far more than its size suggests "
+                  f"(it's damaged, or made to fill the disk)")
 
 
 @dataclass
@@ -201,7 +237,7 @@ class Output:
 
     def __init__(self, out):
         self.owned = isinstance(out, (str, os.PathLike))
-        self.f: BinaryIO = open(out, "wb") if self.owned else out  # noqa: SIM115 - closed by close()
+        self.f: BinaryIO = open(out, "wb") if self.owned else out
 
     def close(self, failed: bool = False):
         if self.owned:

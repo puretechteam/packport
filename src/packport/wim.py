@@ -192,7 +192,13 @@ class WimArchive(Archive):
         super().__init__(source)
         self.wim = _Wim(source)
         many = len(self.wim.metadata) > 1
+        seen = set()
         for k, res in enumerate(self.wim.metadata, 1):
+            if repr(res) in seen:  # two images with one tree: each copy would be unpacked (up to 1 GB) again
+                raise PackportError("This WIM is damaged (two images share their metadata)")
+            seen.add(repr(res))
+            if len(self.members) > MAX_ENTRIES:
+                raise PackportError(f"The WIM has more than {MAX_ENTRIES:,} files")
             meta = self.wim.read(res)
             for path, attrs, digest, mtime in _tree(meta, str(k) if many else ""):
                 is_dir = bool(attrs & ATTR_DIRECTORY)
@@ -231,7 +237,7 @@ class WimArchive(Archive):
                     continue
                 stream = self.open_member(m)
                 if uses[digest] > 1:
-                    spool = kept[digest] = tempfile.SpooledTemporaryFile(max_size=16 << 20)  # noqa: SIM115 - closed below
+                    spool = kept[digest] = tempfile.SpooledTemporaryFile(max_size=16 << 20)
                     stream = Stream(m.name, _tee(stream, spool), res[3], what="WIM")
                 yield m, stream
                 stream.drain()

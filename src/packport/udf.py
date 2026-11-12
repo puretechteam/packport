@@ -206,10 +206,14 @@ class UdfArchive(Archive):
             raise PackportError("The UDF disc is damaged (a partition is missing)")
         return partitions[number][0]
 
-    def _sparing(self, lvd: bytes, at: int) -> dict[int, int]:
+    def _sparing(self, lvd: bytes, at: int) -> tuple[int, dict[int, int]]:
+        """(packet length, {a moved packet's first block: where it is now}): one entry per packet,
+        so a packet length from a damaged map (up to 65,535) never builds billions of entries."""
         packet, tables = struct.unpack_from("<HB", lvd, at + 40)
         size = struct.unpack_from("<I", lvd, at + 44)[0]
         remap: dict[int, int] = {}
+        if not packet:
+            return 1, remap
         for k in range(min(tables, 4)):
             loc = struct.unpack_from("<I", lvd, at + 48 + 4 * k)[0]
             t = self.source.read_at(loc * self.bs, min(size, 1 << 20))
@@ -219,10 +223,9 @@ class UdfArchive(Archive):
             for e in range(n):
                 orig, mapped = struct.unpack_from("<II", t, 56 + 8 * e)
                 if orig < 0xFFFFFFF0:
-                    for p in range(packet):
-                        remap[orig + p] = mapped + p
+                    remap[orig] = mapped
             break
-        return remap
+        return packet, remap
 
     def _sector(self, block: int, part: int) -> int:
         """The physical sector of a block in a partition."""
@@ -232,7 +235,10 @@ class UdfArchive(Archive):
         if m[0] == "physical":
             return m[1] + block
         if m[0] == "sparable":
-            return m[2].get(m[1] + block, m[1] + block)
+            packet, remap = m[2]
+            at = m[1] + block
+            first = at - at % packet
+            return remap[first] + at - first if first in remap else at
         for logical, n, off in m[2]:
             if logical <= block * self.bs < logical + n:
                 if off is None:
@@ -357,6 +363,8 @@ class UdfArchive(Archive):
     def open_member(self, item: Item):
         info = item.ref
         if info["inline"]:
+            if len(info["inline"]) < item.size:
+                raise PackportError(f"{item.name}: the UDF disc is damaged (its data is cut short)")
             return io.BytesIO(info["inline"][:item.size])
         if sum(n for _, n in info["extents"]) < item.size:
             raise PackportError(f"{item.name}: the UDF disc is damaged (its extents are too short)")

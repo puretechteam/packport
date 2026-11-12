@@ -76,6 +76,10 @@ pub struct Rar5Decoder {
     last_length: u64,
     tables: Option<Tables>,
     filters: VecDeque<(u64, u64, u32, u32)>,
+    /// The current file's size: its output may not pass it (a tiny block can't grow the history
+    /// to gigabytes before the size is checked).
+    #[pyo3(get, set)]
+    limit: u64,
 }
 
 impl Rar5Decoder {
@@ -303,6 +307,11 @@ impl Rar5Decoder {
                 self.last_length = last_length;
                 return Err(Damage::new("The archive is damaged (a match reaches back before the data)"));
             }
+            if (self.base + have).saturating_sub(self.file_start).saturating_add(length) > self.limit {
+                self.old = old;
+                self.last_length = last_length;
+                return Err(Damage::new("The archive is damaged (a file holds more data than its stated size)"));
+            }
             let start = (have - dist) as usize;
             let length = length as usize;
             if dist as usize >= length {
@@ -432,7 +441,7 @@ impl Rar5Decoder {
     #[new]
     fn new(dictionary: u64) -> Self {
         Rar5Decoder { dictionary, hist: Vec::new(), base: 0, written: 0, file_start: 0, old: [0; 4], last_length: 0,
-                      tables: None, filters: VecDeque::new() }
+                      tables: None, filters: VecDeque::new(), limit: u64::MAX }
     }
 
     fn reset(&mut self) {
@@ -444,6 +453,7 @@ impl Rar5Decoder {
     fn begin_file(&mut self) {
         self.file_start = self.base + self.hist.len() as u64;
         self.written = self.file_start;
+        self.limit = u64::MAX;
     }
 
     /// Decode one block's data (end: its length in bits).

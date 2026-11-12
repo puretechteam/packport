@@ -45,19 +45,7 @@ fn dist_tables() -> ([u32; DC], [u32; DC]) {
 }
 
 fn crc32(data: &[u8]) -> u32 {
-    let mut table = [0u32; 256];
-    for (i, slot) in table.iter_mut().enumerate() {
-        let mut c = i as u32;
-        for _ in 0..8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
-        }
-        *slot = c;
-    }
-    let mut crc = 0xFFFF_FFFFu32;
-    for &b in data {
-        crc = table[((crc ^ b as u32) & 0xFF) as usize] ^ (crc >> 8);
-    }
-    !crc
+    crc32fast::hash(data)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -364,7 +352,7 @@ impl Rar29Decoder {
     }
 
     fn lz_symbols(&mut self, t: &Tables) -> Res<bool> {
-        let target = (self.file_start + self.size - self.base) as usize;
+        let target = self.file_start.saturating_add(self.size).saturating_sub(self.base) as usize;
         let stop = self.hist.len() + RUN;
         let lim = self.lim();
         let mut pos = self.pos;
@@ -687,7 +675,7 @@ impl Rar29Decoder {
     /// PPMd until the file's output is complete, RUN bytes, the input runs low, the block goes
     /// back to LZ (false), or the file ends (true).
     fn ppm_run(&mut self) -> Res<bool> {
-        let target = (self.file_start + self.size - self.base) as usize;
+        let target = self.file_start.saturating_add(self.size).saturating_sub(self.base) as usize;
         let stop = self.hist.len() + RUN;
         let lim = if self.finished { None } else { Some(self.lim() >> 3) };
         while self.hist.len() < target && self.hist.len() < stop {
@@ -751,7 +739,7 @@ impl Rar29Decoder {
 
     fn flush(&mut self, final_: bool) -> Res<()> {
         let top = self.base + self.hist.len() as u64;
-        let stop = self.file_start + self.size;
+        let stop = self.file_start.saturating_add(self.size);
         loop {
             let written = self.written;
             self.pending.retain(|f| f.start >= written);

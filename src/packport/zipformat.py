@@ -15,6 +15,7 @@ can't be read at all. Every member's CRC-32 and size are checked as it's read.
 from __future__ import annotations
 
 import bz2
+import itertools
 import lzma
 import stat
 import struct
@@ -139,6 +140,8 @@ class ZipArchive(Archive):
             entries = None
         if entries is None:
             entries = self._scan()
+        else:
+            _no_overlap(entries)
         self.members = entries
         for item in self.members:
             if item.link == "":
@@ -240,17 +243,20 @@ class ZipArchive(Archive):
 
     def _measure(self, at: int, method: int) -> tuple[int, int, int] | None:
         """(packed size, CRC, size) of a member whose sizes follow its data: a Deflate stream is
-        unpacked to find its end; otherwise the data descriptor that matches the distance."""
+        unpacked to find its end (a piece at a time, never held whole); otherwise the data
+        descriptor that matches the distance."""
         if method == 8:
             d = zlib.decompressobj(-15)
             pos, usize = at, 0
             while not d.eof:
-                block = self.source.read_at(pos, entries.CHUNK)
+                block = d.unconsumed_tail
                 if not block:
-                    return None
-                pos += len(block)
+                    block = self.source.read_at(pos, entries.CHUNK)
+                    if not block:
+                        return None
+                    pos += len(block)
                 try:
-                    usize += len(d.decompress(block))
+                    usize += len(d.decompress(block, entries.CHUNK))
                 except zlib.error:
                     return None
             csize = pos - len(d.unused_data) - at
@@ -265,15 +271,21 @@ class ZipArchive(Archive):
                     if packed == csize and size == usize:
                         return csize, crc, usize
             return None
-        pos = at
-        while True:
-            k = self._find(DESCRIPTOR, pos)
-            if k < 0:
+        # one pass over what follows, a block at a time: each false signature is checked in the
+        # block it was found in, not by reading a new block from it
+        pos, size = at, self.source.size
+        while pos < size:
+            block = self.source.read_at(pos, entries.CHUNK + 15)
+            k = block.find(DESCRIPTOR)
+            while 0 <= k < entries.CHUNK:
+                crc, csize, usize = struct.unpack_from("<III", block[k + 4:k + 16].ljust(12, b"\0"))
+                if csize == pos + k - at:
+                    return csize, crc, usize
+                k = block.find(DESCRIPTOR, k + 1)
+            if len(block) <= entries.CHUNK:
                 return None
-            crc, csize, usize = struct.unpack("<III", self.source.read_at(k + 4, 12).ljust(12, b"\0"))
-            if csize == k - at:
-                return csize, crc, usize
-            pos = k + 1
+            pos += entries.CHUNK
+        return None
 
     # -- data
 
@@ -291,6 +303,16 @@ class ZipArchive(Archive):
             raise PackportError(f"{item.name} is compressed with {what}, which packport doesn't read")
         return Stream(item.name, _chunks(raw, method, flags, item.size, item.name), item.size, Crc32(crc),
                       "ZIP archive")
+
+
+def _no_overlap(items: list[Item]) -> None:
+    """Refuse members whose data overlaps another's: the trick of a "non-recursive" ZIP bomb
+    (thousands of entries that all point at one highly compressed stream)."""
+    spans = sorted((item.ref[0], item.ref[4]) for item in items)
+    for (start, csize), (nxt, _) in itertools.pairwise(spans):
+        if nxt < start + 30 + csize:
+            raise PackportError("The ZIP archive's members overlap each other (it's damaged, or a ZIP bomb "
+                                "made to fill the disk)")
 
 
 def _chunks(raw: Window, method: int, flags: int, size: int, name: str) -> Iterator[bytes]:

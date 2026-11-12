@@ -125,20 +125,23 @@ class LzhArchive(Archive):
         packed, size = struct.unpack_from("<II", h, 7)
         info = {"name": b"", "folder": b"", "mode": 0, "attr": h[19] if level < 2 else 0, "uname": None,
                 "ufolder": None}
-        if level == 0:
+        if level in (0, 1):
             hsize = h[0] + 2
             raw = src.read_at(at, hsize)
+            if len(raw) < hsize or len(raw) < 22 or sum(raw[2:hsize]) & 0xFF != raw[1]:
+                raise PackportError("The LZH archive is damaged (a member header's checksum doesn't match)")
+        if level == 0:
             nlen = raw[21]
+            if 24 + nlen > hsize:  # the data's CRC-16 comes after the name: without it nothing is checked
+                raise PackportError("The LZH archive is damaged (a member header)")
             info["name"] = raw[22:22 + nlen].replace(b"\\", b"/")
-            crc = struct.unpack_from("<H", raw, 22 + nlen)[0] if len(raw) >= 24 + nlen else None
+            crc = struct.unpack_from("<H", raw, 22 + nlen)[0]
             mtime = from_dos_time(struct.unpack_from("<I", h, 15)[0])
             ext = raw[24 + nlen:]
             if ext[:1] == b"U" and len(ext) >= 12:  # LHa for UNIX
                 mtime, info["mode"] = float(struct.unpack_from("<I", ext, 2)[0]), struct.unpack_from("<H", ext, 6)[0]
             data = at + hsize
         elif level == 1:
-            hsize = h[0] + 2
-            raw = src.read_at(at, hsize)
             nlen = raw[21]
             if 27 + nlen > hsize:
                 raise PackportError("The LZH archive is damaged (a member header)")
@@ -150,6 +153,8 @@ class LzhArchive(Archive):
             data = at + hsize - 2 + ext_size
         elif level == 2:
             hsize = struct.unpack_from("<H", h, 0)[0]
+            if hsize < 26:  # the base header and the first extended header's size
+                raise PackportError("The LZH archive is damaged (a level 2 header)")
             crc = struct.unpack_from("<H", h, 21)[0]
             mtime = float(struct.unpack_from("<I", h, 15)[0])
             _, mtime = self._extended(at + 24, 2, info, mtime)
@@ -158,6 +163,8 @@ class LzhArchive(Archive):
             if struct.unpack_from("<H", h, 0)[0] != 4:
                 raise PackportError("The LZH archive is damaged (a level 3 header)")
             hsize = struct.unpack_from("<I", h, 24)[0]
+            if hsize < 32:  # the base header and the first extended header's size: 0 never moved on
+                raise PackportError("The LZH archive is damaged (a level 3 header)")
             crc = struct.unpack_from("<H", h, 21)[0]
             mtime = float(struct.unpack_from("<I", h, 15)[0])
             _, mtime = self._extended(at + 28, 4, info, mtime)
@@ -357,11 +364,6 @@ def _literal_code(bits: _Bits, pt: _Code) -> _Code:
     if not any(lengths):
         raise PackportError("The archive is damaged (an empty Huffman table)")
     return _Code(lengths)
-
-
-def decode(data: bytes, size: int, window_bits: int) -> bytes:
-    """-lh4- to -lh7- data: size bytes."""
-    return b"".join(decode_iter(data, size, window_bits))
 
 
 def decode_iter(data, size: int, window_bits: int) -> Iterator[bytes]:

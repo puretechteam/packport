@@ -1,4 +1,4 @@
-"""LZX, as used in Microsoft's CHM and LIT files: a decompressor, and a "stored" compressor.
+"""LZX, as used in Microsoft's cabinets, WIM, CHM and LIT files: the decompressor.
 
 Written from Microsoft's description of LZX (the Cabinet format's LZX and the LZX DELTA
 specification): verbatim, aligned-offset and uncompressed blocks; a 20-symbol pre-tree that
@@ -6,9 +6,6 @@ codes the main and length trees' bit lengths as deltas against the previous bloc
 repeated-match offsets; 32 KB frames re-aligned to 16 bits; optional Intel E8 call translation.
 CHM and LIT reset the decoder every few frames ("reset interval"); the caller decodes each
 reset span with ``LzxDecoder.reset()`` in between.
-
-The compressor writes only uncompressed blocks: valid LZX that every reader accepts, used for
-writing LIT.
 """
 
 from __future__ import annotations
@@ -102,6 +99,9 @@ class _Tree:
     __slots__ = ("bits", "flat", "lengths", "long", "max_len")
 
     def __init__(self, lengths: list[int], bits: int):
+        # more codes than the lengths leave room for: damage, which would decode as quiet garbage
+        if sum(1 << (16 - ln) for ln in lengths if ln) > 1 << 16:
+            raise PackportError("Damaged LZX data: an over-full Huffman code")
         self.lengths = lengths
         self.bits = bits
         self.max_len = max(lengths) if lengths else 0

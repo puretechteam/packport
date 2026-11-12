@@ -22,9 +22,10 @@ import io
 import stat
 import struct
 import zlib
+from collections.abc import Iterator
 
-from .archive import Archive, Item, Source, reader
-from .entries import CHUNK, PackportError
+from .archive import Archive, Item, Source, Stream, reader
+from .entries import CHUNK, MAX_ITEMS, PackportError
 
 SECTOR = 2048
 JOLIET = (b"%/@", b"%/C", b"%/E")
@@ -198,6 +199,8 @@ class IsoArchive(Archive):
         self.seen.add(extent)
         pending: list[tuple[int, int]] = []
         for rec in self._records(extent, size):
+            if len(self.members) + len(pending) > MAX_ITEMS:
+                raise PackportError(f"The disc image lists more than {MAX_ITEMS:,} files (it's damaged)")
             flags, nlen = rec[25], rec[32]
             raw = rec[33:33 + nlen]
             if raw in (b"\0", b"\1"):
@@ -351,35 +354,50 @@ class IsoArchive(Archive):
         stream = _Parts(self.source, parts)
         if zf is None:
             return stream
-        return io.BytesIO(_unzisofs(stream.read(), item.size, item.name))
+        stored = sum(n for _, n in parts)
+        return Stream(item.name, _unzisofs(lambda: _Parts(self.source, parts), stored, item.size, item.name),
+                      item.size, what="disc image")
 
 
-def _unzisofs(data: bytes, size: int, name: str) -> bytes:
+def _unzisofs(open_parts, stored: int, size: int, name: str) -> Iterator[bytes]:
     """zisofs: a header (magic, size, header size / 4, log2 of the block size), a table of block
-    offsets, then each block on its own as zlib data (an empty block is zeros)."""
-    if len(data) < 16 or data[:8] != ZISOFS_MAGIC:
+    offsets, then each block on its own as zlib data (an empty block is zeros). Unpacked a block
+    at a time; open_parts() gives the stored data from its start, stored bytes of it."""
+    data = open_parts()
+    head = data.read(16)
+    if len(head) < 16 or head[:8] != ZISOFS_MAGIC:
         raise PackportError(f"{name}: the zisofs data is damaged")
-    hsize, bits = data[12] * 4, data[13]
-    if not 15 <= bits <= 17:
+    hsize, bits = head[12] * 4, head[13]
+    if not 15 <= bits <= 17 or hsize < 16:
         raise PackportError(f"{name}: the zisofs data is damaged (block size)")
     block = 1 << bits
     nblocks = (size + block - 1) // block
-    table = data[hsize:hsize + 4 * (nblocks + 1)]
+    if 4 * (nblocks + 1) > stored:  # a table longer than the data: the size is damaged
+        raise PackportError(f"{name}: the zisofs data is cut short")
+    data.read(hsize - 16)
+    table = data.read(4 * (nblocks + 1))
     if len(table) < 4 * (nblocks + 1):
         raise PackportError(f"{name}: the zisofs data is cut short")
     ptrs = struct.unpack(f"<{nblocks + 1}I", table)
-    out = bytearray()
+    pos, left = hsize + len(table), size
     for k in range(nblocks):
-        want = min(block, size - len(out))
+        want = min(block, left)
         a, b = ptrs[k], ptrs[k + 1]
-        if b < a or b > len(data):
+        if b < a or b > stored:
             raise PackportError(f"{name}: the zisofs data is damaged")
+        left -= want
         if a == b:
-            out += bytes(want)
+            yield bytes(want)
             continue
+        if a < pos:  # blocks out of order: read from the start again
+            data, pos = open_parts(), 0
+        data.read(a - pos)
+        raw = data.read(b - a)
+        pos = b
         try:
-            piece = zlib.decompressobj().decompress(data[a:b], want)
+            piece = zlib.decompressobj().decompress(raw, want)
         except zlib.error as e:
             raise PackportError(f"{name}: the zisofs data is damaged ({e})") from None
-        out += piece.ljust(want, b"\0")
-    return bytes(out)
+        if len(piece) < want:
+            raise PackportError(f"{name}: the zisofs data is damaged (a block unpacks short)")
+        yield piece

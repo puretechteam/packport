@@ -31,6 +31,7 @@ from typing import BinaryIO, NamedTuple
 from .archive import Archive, Item, Window, reader
 from .entries import (
     CHUNK,
+    MAX_ITEMS,
     Entry,
     Member,
     Output,
@@ -293,7 +294,7 @@ def _create(target: Path, counters: dict[str, int]):
     while True:
         path = target.with_name(f"{stem} ({n}){suffix}") if n else target
         try:
-            f = open(path, "xb")  # noqa: SIM115 - the caller closes it
+            f = open(path, "xb")
         except FileExistsError:
             pass
         except (IsADirectoryError, PermissionError):  # a folder, on some systems
@@ -315,7 +316,7 @@ def _folder(path: Path) -> bool:
 
 
 def extract_cpio(archive: bytes | str | os.PathLike | BinaryIO, dest: str | os.PathLike, *,
-                 max_size: int | None = None, max_files: int | None = MAX_FILES,
+                 max_size: int | None | str = "free", max_files: int | None = MAX_FILES,
                  on_skip=None) -> list[Path]:
     """Unpack a CPIO archive (any format ``read_cpio`` reads; bytes, a path or an open binary file) into the folder
     ``dest``, streaming file data so archives larger than memory work. Nothing lands outside
@@ -327,11 +328,18 @@ def extract_cpio(archive: bytes | str | os.PathLike | BinaryIO, dest: str | os.P
     their modification times, and hard links each get the file's data, whichever link carries it.
 
     ``max_size`` caps the bytes written (hard links count each time), so a small archive can't
-    fill the disk, and ``max_files`` caps the members (a million by default; None for no limit).
+    fill the disk: by default the drive's free space less a margin (``free_space(dest)``), None
+    for no limit. ``max_files`` caps the members (a million by default; None for no limit). A
+    file whose data turns out damaged part-way is removed, not left half-written.
     Going over either raises ``PackportError``. ``on_skip(name)`` hears about each member left
     out. Returns every file and folder written."""
+    from .archive import FREE, free_space
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
+    if max_size == FREE:
+        max_size = free_space(dest)
+    elif isinstance(max_size, str):
+        raise ValueError(f"max_size must be a number of bytes, None or {FREE!r}")
     root = dest.resolve()
     written: list[Path] = []
     counters: dict[str, int] = {}
@@ -394,7 +402,13 @@ def extract_cpio(archive: bytes | str | os.PathLike | BinaryIO, dest: str | os.P
                 continue
             spend(h.size)
             with _create(target, counters) as out:
-                _data(f, h, out)
+                try:
+                    _data(f, h, out)
+                except BaseException:  # damaged part-way: no half-written file stays
+                    out.close()
+                    with contextlib.suppress(OSError):
+                        os.unlink(out.name)
+                    raise
             target = Path(out.name)
             os.utime(target, (h.mtime, h.mtime))
             written.append(target)
@@ -435,6 +449,8 @@ class CpioArchive(Archive):
                 item.link = f.read(min(h.size, MAX_NAME)).decode("utf-8", "replace")
                 item.size = 0
             self.members.append(item)
+            if len(self.members) > MAX_ITEMS:
+                raise PackportError(f"The CPIO archive has more than {MAX_ITEMS:,} members (it's damaged)")
             if h.nlink > 1 and kind == stat.S_IFREG:
                 groups.setdefault(h.link_key, []).append(item)
             f.seek(at + h.size)

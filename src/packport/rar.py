@@ -512,6 +512,8 @@ class RarArchive(Archive):
             mode = 0o040755 if is_dir else 0o100444 if attr & ATTR_READONLY else 0o100644
         else:
             mode = attr
+            if not mode & 0o170000:  # permissions with no file type (some writers): a plain file or folder
+                mode |= 0o040000 if is_dir else 0o100000
         link = None
         if host == 3 and attr & 0o170000 == 0o120000 and not is_dir:  # a Unix symlink: its data is the target
             link = src.read_at(pos + hsize, min(pack, 4096)).decode("utf-8", "replace") if method == METHOD_STORE else "?"
@@ -548,7 +550,7 @@ class RarArchive(Archive):
 
         def jobs():
             for item in self.members:
-                if item.is_dir or item.link is not None:
+                if not item.is_file:  # folders, links, FIFOs and devices: never written as files
                     continue
                 if item.encrypted:
                     raise EncryptedError(f"{item.name} is encrypted; packport doesn't decrypt")
@@ -575,9 +577,11 @@ class RarArchive(Archive):
         decoder = None
         try:
             for item in self.members:
-                if item.is_dir or item.link is not None:
+                if item.is_dir:
                     continue
                 r = item.ref
+                if not item.is_file and (item.encrypted or r["method"] == METHOD_STORE or not item.size):
+                    continue  # a link, FIFO or device with nothing in the compressed stream
                 if item.encrypted:
                     raise EncryptedError(f"{item.name} is encrypted; packport doesn't decrypt")
                 if r["method"] != METHOD_STORE and (decoder is None or not r["solid"]):
@@ -585,8 +589,11 @@ class RarArchive(Archive):
                         decoder.release()
                     decoder = Unpack29(max(r["dictionary"], 4 << 20))
                 stream = self._stream(item, decoder)
-                yield item, stream
-                stream.drain()  # a solid archive's next file carries on from this one's end
+                if item.is_file:
+                    yield item, stream
+                # a solid archive's next file carries on from this one's end: a link's compressed
+                # data (its target) is decoded too, or every file after it would fail its CRC
+                stream.drain()
         finally:
             if decoder is not None:
                 decoder.release()
@@ -596,8 +603,10 @@ class RarArchive(Archive):
         if r["method"] == METHOD_STORE or not r["solid"]:
             from .rar3 import Unpack29
             return self._stream(item, Unpack29(max(r["dictionary"], 4 << 20)))
-        for m, stream in self._files():  # solid data has to be decoded from the start
+        files = self._files()
+        for m, stream in files:  # solid data has to be decoded from the start
             if m is item:
+                stream.keep = files  # the decoder lives as long as the stream (closing it would let it go)
                 return stream
         raise PackportError(f"{item.name} has no data")
 

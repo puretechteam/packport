@@ -69,6 +69,8 @@ def decompress(data: bytes, size: int) -> bytes:
                     length -= 15
                 length += 15
             length += 3
+            # a 32-bit length can say gigabytes: only what's left of size is ever copied
+            length = min(length, size - len(out))
             offset = 1 << log2
             if log2:
                 offset |= bits >> (32 - log2)

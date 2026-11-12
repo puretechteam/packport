@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "packport-native"
-version = "0.3.2"
+version = "0.4.0"
 description = "Compiled decoders for packport: the same results, much faster. Optional: packport works without them."
 license = "MIT"
 authors = [{ name = "Pure Tech" }]

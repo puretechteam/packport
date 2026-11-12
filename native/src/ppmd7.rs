@@ -174,19 +174,16 @@ impl Range for Range7z {
 }
 
 /// RAR's carry-less range decoder (Subbotin's; ppmd.py's RangeRar), over a byte source.
-#[allow(dead_code)]
 pub struct RangeRar {
     low: u64,
     code: u64,
     range: u64,
 }
 
-#[allow(dead_code)]
 pub trait ByteSource {
     fn next(&mut self) -> u64;
 }
 
-#[allow(dead_code)]
 impl RangeRar {
     pub fn new(src: &mut dyn ByteSource) -> RangeRar {
         let mut code = 0u64;
@@ -198,13 +195,11 @@ impl RangeRar {
 }
 
 /// A RangeRar with the source it reads from, for the model.
-#[allow(dead_code)]
 pub struct RarCoder<'a> {
     pub rc: &'a mut RangeRar,
     pub src: &'a mut dyn ByteSource,
 }
 
-#[allow(dead_code)]
 impl RarCoder<'_> {
     fn normalize(&mut self) {
         let rc = &mut *self.rc;
@@ -649,11 +644,6 @@ impl Model {
         self.max_order = max_order;
         self.restart();
         self.dummy_see = See { summ: 0, shift: PERIOD_BITS, count: 64 };
-    }
-
-    #[allow(dead_code)]
-    pub fn is_bad(&self) -> bool {
-        self.bad.load(Relaxed)
     }
 
     fn restart(&mut self) {

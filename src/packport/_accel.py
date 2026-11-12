@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import os
 
-VERSION = "0.3.2"  # the packport-native this packport is made for (it ships with each release)
+VERSION = "0.4.0"  # the packport-native this packport is made for (it ships with each release)
 
 native = None
+_other = None  # the version of a packport-native that is installed but doesn't match
 if not os.environ.get("PACKPORT_PURE"):
     try:
         import packport_native as _native
@@ -20,11 +21,22 @@ if not os.environ.get("PACKPORT_PURE"):
     else:
         if getattr(_native, "__version__", None) == VERSION:
             native = _native
+        else:
+            _other = str(getattr(_native, "__version__", "of an unknown version"))
+            import warnings
+            warnings.warn(f"packport-native {_other} is installed, but this packport {VERSION} needs packport-native "
+                          f"{VERSION}: it isn't used, so archives are decoded by the (much slower) Python decoders. "
+                          f"Install packport-native {VERSION} to fix it.", RuntimeWarning, stacklevel=2)
 
 
 def accelerated() -> bool:
     """Whether the compiled decoders are in use."""
     return native is not None
+
+
+def mismatch() -> str | None:
+    """The version of an installed packport-native that isn't used because it doesn't match, or None."""
+    return _other
 
 
 def pump(decoder, inp, size: int | None):

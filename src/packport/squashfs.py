@@ -110,6 +110,10 @@ class SquashfsArchive(Archive):
 
     def _meta(self, table: int, block: int, offset: int, length: int) -> bytes:
         """length bytes of a metadata stream, from the block at table + block, offset in."""
+        # an inode starts within one metadata block (8 KB), and its fields are read from after its header,
+        # which may run into the next block (an offset of 8192 and more is right): far past that is damage
+        if offset >= META + 256:
+            raise PackportError("The squashfs image is damaged (a metadata offset)")
         out = bytearray()
         at = table + block
         hops = 0

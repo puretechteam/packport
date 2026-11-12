@@ -144,13 +144,17 @@ struct Tree {
 }
 
 impl Tree {
-    fn new(lengths: &[u32], bits: u32) -> Tree {
+    fn new(lengths: &[u32], bits: u32) -> Res<Tree> {
         let size = 1usize << bits;
         let mut count = [0u32; 17];
         for &l in lengths {
             count[(l as usize).min(16)] += 1;
         }
         count[0] = 0;
+        // more codes than the lengths leave room for: damage, which would decode as quiet garbage
+        if (1..17).map(|l| (count[l] as u64) << (16 - l)).sum::<u64>() > 1 << 16 {
+            return Err(Damage::new("Damaged LZX data: an over-full Huffman code"));
+        }
         let max_len = (1..17).rev().find(|&l| count[l] > 0).unwrap_or(0) as u32;
         let mut start = [0usize; 17];
         for l in 1..17 {
@@ -188,7 +192,7 @@ impl Tree {
         }
         let f12 = if bits == 12 { flat.as_slice().try_into().ok().map(|a: &[i32; 4096]| Box::new(*a)) } else { None };
         let f7 = if bits == 7 { flat.as_slice().try_into().ok().map(|a: &[i32; 128]| Box::new(*a)) } else { None };
-        Tree { bits, max_len, flat, first, count, start, order, f12, f7 }
+        Ok(Tree { bits, max_len, flat, first, count, start, order, f12, f7 })
     }
 
     fn decode(&self, b: &mut Bits) -> Res<u32> {
@@ -249,7 +253,7 @@ impl LzxDecoder {
 
     fn read_lengths(b: &mut Bits, lengths: &mut [u32], first: usize, last: usize) -> Res<()> {
         let pre_lengths: Vec<u32> = (0..PRETREE_SIZE).map(|_| b.read(4)).collect();
-        let pre = Tree::new(&pre_lengths, 6);
+        let pre = Tree::new(&pre_lengths, 6)?;
         let mut i = first;
         while i < last {
             let code = pre.decode(b)?;
@@ -504,17 +508,17 @@ impl LzxDecoder {
                     }
                     if self.block_type == 2 {
                         let lengths: Vec<u32> = (0..ALIGNED_SIZE).map(|_| b.read(3)).collect();
-                        aligned_tree = Some(Tree::new(&lengths, 7));
+                        aligned_tree = Some(Tree::new(&lengths, 7)?);
                     }
                     if self.block_type == 1 || self.block_type == 2 {
                         let mut ml = std::mem::take(&mut self.main_lengths);
                         Self::read_lengths(&mut b, &mut ml, 0, NUM_CHARS)?;
                         Self::read_lengths(&mut b, &mut ml, NUM_CHARS, self.main_size)?;
-                        main_tree = Some(Tree::new(&ml, 12));
+                        main_tree = Some(Tree::new(&ml, 12)?);
                         self.main_lengths = ml;
                         let mut ll = std::mem::take(&mut self.length_lengths);
                         Self::read_lengths(&mut b, &mut ll, 0, LENGTH_SIZE)?;
-                        length_tree = Some(Tree::new(&ll, 12));
+                        length_tree = Some(Tree::new(&ll, 12)?);
                         self.length_lengths = ll;
                     } else if self.block_type == 3 {
                         // 1 to 16 bits of padding (never 0) bring the input to a 16-bit boundary

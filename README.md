@@ -4,7 +4,7 @@ Read the archives, installers, disc and disk images 7-Zip reads, and write RAR, 
 
 ```
 pip install git+https://github.com/puretechteam/packport
-pip install https://github.com/puretechteam/packport/releases/download/v0.3.2/packport_native-0.3.2-cp310-abi3-win_amd64.whl
+pip install https://github.com/puretechteam/packport/releases/download/v0.4.0/packport_native-0.4.0-cp310-abi3-win_amd64.whl
 ```
 
 The second line is optional: the wheel for 64-bit Windows (each [release](https://github.com/puretechteam/packport/releases) has Linux and macOS ones too). Without it packport works the same, with its Python decoders.
@@ -29,13 +29,14 @@ or from a terminal:
 ```
 packport --list setup.exe
 packport --extract disk.vhdx out
+packport --extract backup.7z out --max-size 20G   # by default: the drive's free space less 1 GB
 packport pages/ comic.cbr
 packport report.pdf notes.txt bundle.cpio
 ```
 
 ## Why packport?
 
-[ConvertAll](https://github.com/puretechteam/ConvertAll) used to hand about 30 archive formats to 7-Zip: RAR and CBR, CAB, ISO and UDF discs, WIM, installers, Linux and macOS packages, old archivers, virtual disks and the file systems on them, and the ZIP and 7z files Python's own modules can't open. packport reads all of them itself, so ConvertAll no longer needs 7-Zip. It's pure Python on purpose: it installs anywhere Python 3.10+ does and bundles cleanly into a PyInstaller app. The price is speed on the heavier compression methods (see [Speed](#speed)).
+[Latheport](https://github.com/puretechteam/Latheport) (called ConvertAll until 1.5) used to hand about 30 archive formats to 7-Zip: RAR and CBR, CAB, ISO and UDF discs, WIM, installers, Linux and macOS packages, old archivers, virtual disks and the file systems on them, and the ZIP and 7z files Python's own modules can't open. packport reads all of them itself, so Latheport no longer needs 7-Zip. It's pure Python on purpose: it installs anywhere Python 3.10+ does and bundles cleanly into a PyInstaller app. The price is speed on the heavier compression methods (see [Speed](#speed)).
 
 Some formats are easy to read but have no free way to write them, and packport writes those too:
 
@@ -93,7 +94,7 @@ Writers never write links: a link to a file is stored as the file, a link to a f
 
 ## packport-native
 
-packport's own decoders are written in Python. packport-native has the slow ones again in Rust: LZX (CAB, WIM, CHM), RAR 2.9 to 5 (LZ, PPMd and the filters), 7z's PPMd and BCJ2, ZIP's PPMd, Deflate64, XPRESS, LZH and ARJ, NTFS's LZNT1, Apple's ADC, LZ4, and the CRC-32, CRC-16 and CAB checksums. PKZIP 1's Shrink and Implode, 7z's ARM64 and RISC-V filters and `.Z` stay in Python (rare, or fast enough). packport uses it when it's installed, and gives the same bytes either way: the tests read every test archive, and damaged copies of each, both ways and compare. `packport.accelerated()` says which is in use; `PACKPORT_PURE=1` keeps packport on its Python decoders.
+packport's own decoders are written in Python. packport-native has the slow ones again in Rust: LZX (CAB, WIM, CHM), RAR 2.9 to 5 (LZ, PPMd and the filters), 7z's PPMd and BCJ2, ZIP's PPMd, Deflate64, XPRESS, LZH and ARJ, NTFS's LZNT1, Apple's ADC, LZ4, and the CRC-32, CRC-16 and CAB checksums. PKZIP 1's Shrink and Implode, 7z's ARM64 and RISC-V filters and `.Z` stay in Python (rare, or fast enough). packport uses it when it's installed, and gives the same bytes either way: the tests read every test archive, and damaged copies of each, both ways and compare. `packport.accelerated()` says which is in use; `PACKPORT_PURE=1` keeps packport on its Python decoders. A packport-native of another version isn't used (its decoders may not match): packport says so in a warning when it starts, and in `packport --version`.
 
 Independent pieces are decoded on several cores at once, in archive order: 7z folders, WIM chunks, squashfs blocks, and the files of a non-solid RAR archive (a CBR's pages). A big 7z folder or cabinet folder is decoded in a thread of its own while what it already gave is being written, and BCJ2's streams are decoded side by side. `PACKPORT_THREADS` sets how many threads (1: none); by default one less than the cores, at most 8. The Python decoders gain little from it; zlib, lzma and packport-native let go of Python's lock while they work.
 
@@ -104,9 +105,9 @@ Every file is unpacked a piece at a time and never held whole, so a 5 GB file in
 Reading:
 
 ```python
-packport.open(src, fmt=None) -> Archive        # a path, a list of volume paths, bytes, or a binary file
+packport.open(src, fmt=None, *, max_size=...) -> Archive   # a path, a list of volume paths, bytes, or a binary file
 packport.detect(src) -> str | None             # "rar", "rar5", "7z", "zip", "iso", "udf", "disk", ...
-packport.extract(src, folder, *, fmt=None, max_size=None, max_files=1_000_000,
+packport.extract(src, folder, *, fmt=None, max_size="free", max_files=1_000_000,
                  on_skip=None, on_rename=None) -> list[Path]
 
 archive.members                                # Items: name, size, is_dir, link, mtime, mode, encrypted
@@ -116,13 +117,15 @@ archive.read(item_or_name) -> bytes
 
 An `Archive` is a context manager. `files()` hands over each stream in turn, valid until the next one is taken, so solid RAR and 7z blocks are decoded once. Damaged archives raise `packport.PackportError`, never anything else (thousands of corrupted, truncated and random inputs in the tests make sure of that).
 
-`extract` never writes outside the folder: leading slashes are dropped, names that would still climb out or start with a drive (`C:/...`) are skipped, and so are links and device files. On Windows, other names are made safe the way 7-Zip does it (`a:b` becomes `a_b`, `CON` becomes `_CON`), so nothing is written to an alternate data stream or a device. Existing files are never overwritten: a taken name gets ` (1)`. `max_size` caps the bytes written and `max_files` the members; `on_skip(name)` and `on_rename(name, path)` hear about each member left out or renamed.
+`extract` never writes outside the folder: leading slashes are dropped, names that would still climb out or start with a drive (`C:/...`) are skipped, and so are links and device files. On Windows, other names are made safe the way 7-Zip does it (`a:b` becomes `a_b`, `CON` becomes `_CON`), so nothing is written to an alternate data stream or a device. Existing files are never overwritten: a taken name gets ` (1)`. `max_size` caps the bytes written: by default what the folder's drive has free, less 1 GB (or a tenth of what's free, if less), so an archive made to fill the disk stops first; `None` means no limit. `max_files` caps the members. A file whose data turns out damaged part-way (a checksum that doesn't match) is removed, not left half-written. `on_skip(name)` and `on_rename(name, path)` hear about each member left out (also one whose name the file system refuses, such as a part longer than 255 characters on Windows) or renamed.
+
+Some formats are unpacked into a temporary file as they open, so their members can be read in any order: an RPM's payload, a solid NSIS installer, a .pkg's Payload. That stops at `open(..., max_size=...)` bytes, or when you give none at 200 times the archive's size (at least 64 MB): a 778-byte installer that unpacks to 300 MB of zeros is refused after 64 MB, where it used to write all 300 MB first. An explicit `max_size=None` (in `open`, `extract` or `--max-size none`) means no limit at all, this one included; `extract`'s default, `"free"`, keeps it. ZIP members whose data overlaps another's (the trick of a "non-recursive" ZIP bomb) are refused.
 
 Writing:
 
 ```python
 packport.write_rar(out, sources) -> list[Entry]
-packport.write_cpio(out, sources) -> list[Entry]
+packport.write_cpio(out, sources, fmt="newc") -> list[Entry]   # fmt="odc" for odc
 packport.write_wim(out, sources) -> list[Entry]
 packport.write_tar_z(out, sources) -> list[Entry]
 packport.write_z(out, source)                  # one file: a path or bytes
@@ -131,7 +134,7 @@ packport.compress(data, bits=16) -> bytes      # .Z in memory
 packport.decompress(data, max_size=1 << 30) -> bytes
 packport.read_rar(data_or_path) -> list[Member]    # stored RAR only; names as stored
 packport.read_cpio(data_or_path) -> list[Member]   # names as stored
-packport.extract_cpio(data_path_or_file, folder, *, max_size=None, max_files=1_000_000, on_skip=None)
+packport.extract_cpio(data_path_or_file, folder, *, max_size="free", max_files=1_000_000, on_skip=None)
 ```
 
 `out` is a path or a writable binary file. `sources` can be a path or a list of paths (folders keep their name and include everything inside them, like `7z a` and `tar`), `packport.tree(folder)` (everything inside a folder, without the folder itself), `(archive name, bytes or path)` pairs, `packport.Entry` objects, or a `{archive name: bytes | path | None}` mapping, where `None` makes a folder. `RarWriter` and `CpioWriter` write entry by entry; `ZWriter` is a writable file that compresses into `.Z`.
@@ -169,7 +172,7 @@ For `.Z`, libarchive is much faster too: 20 MB of text took packport 4.5 s to wr
 
 ## How it's tested
 
-The suite has 662 tests, and any warning fails one (4 big-file ones run with `PACKPORT_SLOW=1`, one needs the Ghostscript installer, `PACKPORT_NSIS_SAMPLE`, and three check packport-native against the Python decoders when it's installed), against these oracles:
+The suite has 699 tests, and any warning fails one (4 big-file ones run with `PACKPORT_SLOW=1`, one needs the Ghostscript installer, `PACKPORT_NSIS_SAMPLE`, and three check packport-native against the Python decoders when it's installed), against these oracles:
 
 - **7-Zip 24.09.** Every archive packport reads in the tests was extracted by 7-Zip and compared byte for byte: 145 of libarchive's own test archives (RAR, CAB, 7z, ZIP, LZH; BSD license), 25 of its ISO images, 6 of Apache Commons Compress's (Shrink, Implode, ARJ; Apache License 2.0), dfvfs's disk images (Apache License 2.0), go-diskfs's squashfs image (MIT), and archives 7-Zip itself wrote with every method it has. Where packport and 7-Zip differ on purpose, the test says so and why: links left out, names in old code pages, Rock Ridge names 7-Zip cuts short, system files.
 - **Formats 7-Zip doesn't write.** PPMd's "cut off" mode, big Shrink streams, LZH, ARJ, squashfs and VDI are written by test-only encoders in `tests/` (never shipped), and 7-Zip has to read each back to the original bytes. NTFS's LZNT1 decoder unpacks what Windows' own compressor (`RtlCompressBuffer`) writes; the LZ4 decoder what the lz4 library writes.

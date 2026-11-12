@@ -152,7 +152,9 @@ def test_cab(tmp_path, compression):
         ".Set Cabinet=on", ".Set Compress=on", ".Set MaxDiskSize=0", f".Set CompressionType={compression}",
         f".Set RptFileName={tmp_path / 'r.txt'}", f".Set InfFileName={tmp_path / 'i.txt'}", f'"{src}" "big.bin"']) + "\n")
     run(MAKECAB, "/F", ddf)
-    _check(tmp_path / "a.cab", size, size // 4)
+    # LZX's peak is 3.2 to 4.2 MB depending on what was loaded before (its first use counts the decoder's own
+    # setup), so a quarter of 16 MB failed now and then; half still catches a decoder that holds the whole member
+    _check(tmp_path / "a.cab", size, size // 4 if compression == "MSZIP" else size // 2)
 
 
 @pytest.mark.parametrize("method", ["lzma", "zlib", "bzip2"])

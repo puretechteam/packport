@@ -224,17 +224,21 @@ class Hfs:
         try:
             if kind == 3:  # zlib (or stored when the first byte says so), inline in the attribute
                 body = attr[16:]
-                return body[1:1 + size] if body[:1] == b"\xff" else zlib.decompress(body)[:size]
+                return body[1:1 + size] if body[:1] == b"\xff" else zlib.decompressobj().decompress(body, size)
             if kind == 4:  # zlib in the resource fork: a table of 64 KB blocks
                 fork = Extents(self.dev, self._fork_runs(rsrc, fid, 0xFF), rsrc.size).read()
                 data_at, = struct.unpack_from(">I", fork, 0)
                 base = data_at + 4
                 count, = struct.unpack_from("<I", fork, base)
+                count = min(count, -(-size // 65536))  # the blocks the size needs, never what the table claims
                 out = bytearray()
                 for k in range(count):
+                    if len(out) >= size:
+                        break
                     off, n = struct.unpack_from("<II", fork, base + 4 + 8 * k)
                     block = fork[base + off:base + off + n]
-                    out += block[1:] if block[:1] == b"\xff" else zlib.decompress(block)
+                    want = size - len(out)
+                    out += block[1:1 + want] if block[:1] == b"\xff" else zlib.decompressobj().decompress(block, want)
                 return bytes(out[:size])
         except (zlib.error, struct.error) as e:
             raise PackportError(f"{item.name}: the compressed data is damaged ({e})") from None

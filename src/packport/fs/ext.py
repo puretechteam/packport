@@ -27,6 +27,7 @@ ROOT = 2
 MAX_DEPTH = 256
 MAX_ENTRIES = 2_000_000
 MAX_EXTENTS = 1 << 20
+MAX_NODES = 1 << 16  # extent-tree index blocks read for one file
 
 
 def probe(dev) -> bool:
@@ -117,7 +118,7 @@ class Ext:
             raise PackportError("The ext file system is damaged (a file size)")
         mapped: list[tuple[int, int, int | None]] = []  # (logical block, count, physical block)
         if flags & FLAG_EXTENTS:
-            self._tree(ino[40:100], mapped, 0)
+            self._tree(ino[40:100], mapped, 0, set())
         else:
             self._blockmap(ino, nblocks, mapped)
         mapped.sort(key=lambda m: m[0])
@@ -137,7 +138,9 @@ class Ext:
             runs.append((None, (nblocks - pos) * self.bs))
         return runs
 
-    def _tree(self, node: bytes, out: list, depth: int) -> None:
+    def _tree(self, node: bytes, out: list, depth: int, seen: set) -> None:
+        """The extents under node into out. seen: the index blocks visited, each once (thousands of
+        entries all pointing at one block would otherwise read it billions of times)."""
         if depth > 8:
             raise PackportError("The ext file system is damaged (an extent tree is too deep)")
         magic, entries, _max, level = struct.unpack_from("<HHHH", node, 0)
@@ -157,7 +160,11 @@ class Ext:
                     raise PackportError("The ext file system is damaged (too many extents)")
             else:
                 _logical, lo, hi = struct.unpack_from("<IIH", e)
-                self._tree(self.dev.read_at((hi << 32 | lo) * self.bs, self.bs), out, depth + 1)
+                block = hi << 32 | lo
+                if block in seen or len(seen) >= MAX_NODES:
+                    raise PackportError("The ext file system is damaged (an extent tree points back into itself)")
+                seen.add(block)
+                self._tree(self.dev.read_at(block * self.bs, self.bs), out, depth + 1, seen)
 
     def _blockmap(self, ino: bytes, nblocks: int, out: list) -> None:
         ptrs = struct.unpack_from("<15I", ino, 40)

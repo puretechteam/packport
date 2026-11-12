@@ -28,13 +28,14 @@ from collections.abc import Iterator
 
 from . import entries
 from .archive import Archive, Item, Stream, Window, reader, stored
-from .entries import PackportError
+from .entries import PackportError, spool_limit, too_big
 
 SIG = struct.pack("<I", 0xDEADBEEF) + b"NullsoftInst"
 EW_CREATEDIR, EW_EXTRACTFILE = 11, 20
 NB_ENTRIES, NB_STRINGS = 2, 3
 BLOCKS = 8
 MAX_HEADER = 64 << 20
+MAX_STRING = 8192  # NSIS's own NSIS_MAX_STRLEN is 1024 (8192 in its large-strings build)
 VARIABLES = {**{i: f"{i}" for i in range(10)}, **{10 + i: f"R{i}" for i in range(10)},
              20: "CMDLINE", 21: "INSTDIR", 22: "OUTDIR", 23: "EXEDIR", 24: "LANGUAGE", 25: "TEMP",
              26: "PLUGINSDIR", 27: "EXEPATH", 28: "EXEFILE", 29: "HWNDPARENT", 30: "_CLICK", 31: "_OUTDIR"}
@@ -106,6 +107,9 @@ def _unpack(raw, method: str, limit: int) -> Iterator[bytes]:
                 raise PackportError("This installer is damaged (LZMA properties)")
             props, dict_size = head[0], struct.unpack_from("<I", head, 1)[0]
             lc, rest = props % 9, props // 9
+            # liblzma allocates the dictionary up front: never more than the limit on what comes out
+            # (it never looks further back than that), so 5 bytes can't ask for 4 GB
+            dict_size = min(max(dict_size, 4096), max(limit, 4096))
             d = lzma.LZMADecompressor(lzma.FORMAT_RAW, filters=[{
                 "id": lzma.FILTER_LZMA1, "dict_size": dict_size, "lc": lc, "lp": rest % 5, "pb": rest // 5}])
             first = b""
@@ -139,12 +143,17 @@ def _unpack(raw, method: str, limit: int) -> Iterator[bytes]:
 
 
 class _Spool:
-    """Decoded data kept in a temporary file (in memory up to 4 MB), read like a Source."""
+    """Decoded data kept in a temporary file (in memory up to 4 MB), read like a Source: limit
+    bytes at most (more is a bomb, refused before it fills the disk)."""
 
-    def __init__(self, chunks):
-        self.f = tempfile.SpooledTemporaryFile(max_size=4 << 20)  # noqa: SIM115 - closed by close()
+    def __init__(self, chunks, limit: int | None = None):
+        self.f = tempfile.SpooledTemporaryFile(max_size=4 << 20)
         try:
+            size = 0
             for chunk in chunks:
+                size += len(chunk)
+                if limit is not None and size > limit:
+                    raise too_big("This installer", limit)
                 self.f.write(chunk)
         except BaseException:
             self.f.close()  # damaged data part-way: the temporary file goes now, not at exit
@@ -172,11 +181,20 @@ def _method(raw: bytes) -> str:
 def _strings(data: bytes, unicode: bool):
     """A function giving the text at a string offset (in characters), its codes spelled as NSIS
     spells them: $INSTDIR, $PLUGINSDIR, $(LangString) ..."""
+    seen: dict[int, str] = {}  # the same string is named by many entries ($INSTDIR, a folder)
+
     def text(offset: int) -> str:
+        if offset in seen:
+            return seen[offset]
+        seen[offset] = got = _text(offset)
+        return got
+
+    def _text(offset: int) -> str:
         out = []
         if unicode:
             at = 2 * offset
-            while at + 1 < len(data):
+            stop = min(len(data), at + 2 * MAX_STRING)
+            while at + 1 < stop:
                 c = data[at] | data[at + 1] << 8
                 at += 2
                 if c == 0:
@@ -199,7 +217,8 @@ def _strings(data: bytes, unicode: bool):
                     out.append(chr(c))
         else:
             at = offset
-            while at < len(data):
+            stop = min(len(data), at + MAX_STRING)
+            while at < stop:
                 c = data[at]
                 at += 1
                 if c == 0:
@@ -284,7 +303,8 @@ class NsisArchive(Archive):
         else:
             self.solid = True
             self.method = _method(start)
-            self.spool = _Spool(_unpack(Window(source, self.body_at, body_size), self.method, 1 << 40))
+            limit = spool_limit(source, body_size)
+            self.spool = _Spool(_unpack(Window(source, self.body_at, body_size), self.method, limit + 1), limit)
             hlen = struct.unpack("<I", self.spool.read_at(0, 4).ljust(4, b"\0"))[0]
             if hlen > MAX_HEADER:
                 raise PackportError("This installer is damaged (its header is too big)")
@@ -365,7 +385,9 @@ class NsisArchive(Archive):
         if not packed:
             item.size = raw.size
             return Stream(item.name, stored(raw), raw.size, what="installer")
-        spool = _Spool(_unpack(raw, self.method, 1 << 40))  # its size isn't stored: unpack it to learn it
+        # its size isn't stored: unpack it to learn it
+        limit = spool_limit(self.source, raw.size)
+        spool = _Spool(_unpack(raw, self.method, limit + 1), limit)
         self.spools.append(spool)  # closed when read to the end, or with the archive
         item.size = spool.size
         return Stream(item.name, _drain_spool(spool), spool.size, what="installer")

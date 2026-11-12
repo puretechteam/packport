@@ -326,7 +326,7 @@ def test_pbzx_payload():
     stream = b"pbzx" + struct.pack(">Q", 6000) + struct.pack(">QQ", 6000, len(chunk)) + chunk + \
         struct.pack(">QQ", 0, len(plain) - 6000) + plain[6000:]
     from packport.xar import pbzx
-    assert pbzx(io.BytesIO(stream)) == plain
+    assert b"".join(pbzx(io.BytesIO(stream))) == plain
 
 
 def test_xar_refuses_entity_declarations():

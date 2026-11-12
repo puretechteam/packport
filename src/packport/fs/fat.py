@@ -21,6 +21,7 @@ from . import Extents
 
 MAX_DEPTH = 128
 MAX_ENTRIES = 2_000_000
+MAX_FOLDER = 1 << 28  # bytes of one folder's entries
 
 
 def _bpb(boot: bytes) -> dict | None:
@@ -105,8 +106,17 @@ class Fat:
     def _chain(self, first: int, size: int | None) -> list[tuple[int, int]]:
         """The cluster chain from first, merged into (byte offset, length) runs."""
         runs: list[tuple[int, int]] = []
-        c, total, limit = first, 0, self.b["clusters"] + 2
+        # a chain can't be longer than the FAT has entries (the cluster count comes from the boot
+        # sector, up to 2^32: a chain that loops would be followed that long)
+        entries = len(self.fat) * 8 // self.b["kind"]
+        limit = min(self.b["clusters"] + 2, entries)
+        c, total, steps = first, 0, 0
         while 2 <= c < limit:
+            steps += 1
+            if steps > limit:
+                raise PackportError("The FAT file system is damaged (a cluster chain loops)")
+            if size is None and total > MAX_FOLDER:
+                raise PackportError("The FAT file system is damaged (a folder is too big)")
             at = (self.b["first_data"] + (c - 2) * self.b["spc"]) * self.b["bps"]
             if runs and runs[-1][0] + runs[-1][1] == at:
                 runs[-1] = (runs[-1][0], runs[-1][1] + self.cluster_size)
@@ -115,15 +125,13 @@ class Fat:
             total += self.cluster_size
             if size is not None and total >= size:
                 break
-            if total > (limit + 1) * self.cluster_size:
-                raise PackportError("The FAT file system is damaged (a cluster chain loops)")
             c = self._next(c)
         return runs
 
     def _read_chain(self, first: int, size: int | None) -> bytes:
         runs = self._chain(first, size)
         total = sum(n for _, n in runs)
-        if total > 1 << 28:
+        if total > MAX_FOLDER:
             raise PackportError("The FAT file system is damaged (a folder is too big)")
         return Extents(self.dev, runs, total).read()
 

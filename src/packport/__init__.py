@@ -17,7 +17,7 @@ or from a terminal: ``packport pages/ comic.cbr``.
 
 from __future__ import annotations
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 
 from ._accel import accelerated
 from .archive import Archive, EncryptedError, Item, detect, extract

@@ -293,11 +293,18 @@ class CabArchive(Archive):
         by_stream: dict[int, list[Item]] = {}
         for m in self.members:
             by_stream.setdefault(m.ref[0], []).append(m)
+        # files that overlap the one before are read by decoding their folder again: at most twice
+        # the archive's declared size in all (thousands of 1-byte files at the end of a big one
+        # would otherwise decode it thousands of times)
+        budget = 2 * sum(m.size for m in self.members) + (64 << 20)
         for k in sorted(by_stream):
             folder, pos = Chunks(streamed(self._stream(k))), 0  # decoded in a thread while written
             for m in sorted(by_stream[k], key=lambda m: m.ref[1]):
                 offset = m.ref[1]
                 if offset < pos:  # it overlaps the one before: read the folder again for it
+                    budget -= offset + m.size
+                    if budget < 0:
+                        raise PackportError("This cabinet is damaged (its files overlap each other again and again)")
                     yield m, self.open_member(m)
                     continue
                 if folder.skip(offset - pos) < offset - pos:

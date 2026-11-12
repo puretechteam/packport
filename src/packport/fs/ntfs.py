@@ -20,9 +20,10 @@ from __future__ import annotations
 import io
 import stat
 import struct
+from collections.abc import Iterator
 
 from .._accel import native
-from ..archive import Item
+from ..archive import Item, Stream
 from ..entries import PackportError
 from . import Extents
 
@@ -316,12 +317,12 @@ class Ntfs:
         if not attr["nonresident"]:
             return io.BytesIO(attr["value"])
         if attr["compressed"]:
-            return io.BytesIO(self._lznt1(item, attr))
-        runs = _trim(_runs(attr), min(attr["init"], attr["size"]))
-        stream = Extents(self.dev, runs, min(attr["init"], attr["size"]), item.name)
-        if attr["init"] >= attr["size"]:
-            return stream
-        return io.BytesIO(stream.read() + bytes(attr["size"] - attr["init"]))  # past the initialized size: zeros
+            return Stream(item.name, self._lznt1(item, attr), item.size, what="file system")
+        init = min(attr["init"], attr["size"])
+        runs = _trim(_runs(attr), init)
+        if init < attr["size"]:
+            runs.append((None, attr["size"] - init))  # past the initialized size: zeros, never held in memory
+        return Extents(self.dev, runs, attr["size"], item.name)
 
     def _stream(self, attr: dict, name: str) -> bytes:
         if not attr["nonresident"]:
@@ -330,14 +331,29 @@ class Ntfs:
             raise PackportError(f"{name} is too big for packport to unpack in memory")
         return Extents(self.dev, _trim(_runs(attr), attr["size"]), attr["size"], name).read()
 
-    def _lznt1(self, item: Item, attr: dict) -> bytes:
+    def _lznt1(self, item: Item, attr: dict) -> Iterator[bytes]:
+        """A compressed file's data, a compression unit at a time: the runlist cut to the units the
+        file's size needs (a run of 2^40 clusters in a 1 KB file is never split up), each unit all
+        on disk (stored), partly (packed) or not at all (zeros)."""
         unit = self.cluster << attr["unit"]
-        out = bytearray()
-        # the runlist split into compression units: all on disk (stored), partly (packed), none (zeros)
-        pieces: list[list[tuple[int | None, int]]] = []
-        cur: list[tuple[int | None, int]] = []
-        filled = 0
+        need = -(-item.size // unit) * unit
+        left, cur, filled = item.size, [], 0
+
+        def emit(piece):
+            real = [(a, n) for a, n in piece if a is not None]
+            stored = sum(n for _, n in real)
+            if not real:
+                data = bytes(unit)
+            elif stored >= unit:
+                data = Extents(self.dev, real, stored, item.name).read()
+            else:
+                data = lznt1(Extents(self.dev, real, stored, item.name).read(), unit).ljust(unit, b"\0")
+            return data[:left]
+
+        total = 0
         for at, n in _runs(attr):
+            n = min(n, need - total)
+            total += n
             while n:
                 take = min(n, unit - filled)
                 cur.append((at, take))
@@ -345,23 +361,16 @@ class Ntfs:
                 n -= take
                 filled += take
                 if filled == unit:
-                    pieces.append(cur)
+                    data = emit(cur)
+                    left -= len(data)
+                    yield data
                     cur, filled = [], 0
-        if cur:
-            pieces.append(cur)
-        for piece in pieces:
-            if len(out) >= item.size:
+                    if left <= 0:
+                        return
+            if total >= need:
                 break
-            real = [(a, n) for a, n in piece if a is not None]
-            stored = sum(n for _, n in real)
-            if not real:
-                out += bytes(unit)
-            elif stored >= unit:
-                out += Extents(self.dev, real, stored, item.name).read()
-            else:
-                packed = Extents(self.dev, real, stored, item.name).read()
-                out += lznt1(packed, unit).ljust(unit, b"\0")
-        return bytes(out[:item.size])
+        if cur and left > 0:
+            yield emit(cur)
 
     def _wof(self, item: Item, reparse: bytes, wof: dict) -> bytes:
         """WOF: the reparse data says the algorithm; the stream holds a table of chunk ends (4

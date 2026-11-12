@@ -137,14 +137,17 @@ class DebArchive(Archive):
                 continue
             prefix = "DEBIAN/" if name.startswith("control") else ""
             try:
-                tar = tarfile.open(fileobj=decompressed(Window(source, at, size), name), mode="r:")  # noqa: SIM115 - closed by close()
+                tar = tarfile.open(fileobj=decompressed(Window(source, at, size), name), mode="r:")
                 infos = tar.getmembers()
             except (tarfile.TarError, OSError, EOFError, zlib.error, lzma.LZMAError) as e:
                 raise PackportError(f"This package's {name} is damaged ({e})") from None
             self.tars.append((tar, prefix))
             for info in infos:
-                inner = info.name.lstrip("./").lstrip("/")
-                if not inner:
+                inner = info.name
+                while inner.startswith("./"):  # only the "./" in front: ".profile" keeps its dot
+                    inner = inner[2:]
+                inner = inner.lstrip("/")
+                if not inner or inner == ".":
                     continue
                 if prefix and inner in ("", "."):
                     continue

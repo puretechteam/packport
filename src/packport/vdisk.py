@@ -20,19 +20,32 @@ import zlib
 from pathlib import Path
 
 from ._accel import native
+from .cpio import _DEVICES as _WINDOWS_DEVICES
+from .disk import _guid
 from .entries import PackportError
 
+MAX_BLOCK = 1 << 28  # a block of a VHD, VHDX or VDI: 256 MB at most (the VHDX spec's top; VHD uses 2 MB)
 MAX_CHAIN = 16
 
 
 class _Device:
-    """A disk: size, and read_at() built on read_block() for whole blocks of block_size."""
+    """A disk: size, and read_at() built on read_block() for whole blocks of block_size (or on
+    read_range(), which a format gives for blocks it can read a piece of straight from the file)."""
 
     size = 0
     block_size = 512
+    _cached: tuple[int, bytes] | None = None
 
     def read_block(self, index: int) -> bytes:
         raise NotImplementedError
+
+    def read_range(self, index: int, inner: int, n: int) -> bytes:
+        """n bytes from inner in block index: by default from the whole block, the last one kept
+        (a file system reads a few KB at a time; a VHDX block is 32 MB)."""
+        cached = self._cached
+        if cached is None or cached[0] != index:
+            cached = self._cached = (index, self.read_block(index))
+        return cached[1][inner:inner + n]
 
     def read_at(self, offset: int, n: int) -> bytes:
         if offset < 0 or offset > self.size:
@@ -42,8 +55,11 @@ class _Device:
         bs = self.block_size
         while len(out) < n:
             index, inner = divmod(offset + len(out), bs)
-            block = self.read_block(index)
-            out += block[inner:inner + n - len(out)]
+            take = min(n - len(out), bs - inner)
+            piece = self.read_range(index, inner, take)
+            if len(piece) < take:
+                piece = piece.ljust(take, b"\0")
+            out += piece
         return bytes(out)
 
 
@@ -53,7 +69,7 @@ class _File:
 
     def __init__(self, path: Path, owner):
         self.path, self.lock = path, threading.Lock()
-        self.f = builtins.open(path, "rb")  # noqa: SIM115 - closed with the archive
+        self.f = builtins.open(path, "rb")
         self.owned = getattr(owner, "owned", None)
         if self.owned is not None:
             self.owned.append(self.f)
@@ -97,7 +113,7 @@ def _plain(part: str) -> bool:
             and not part.endswith((" ", ".")) and part.split(".")[0].upper() not in _DEVICES)
 
 
-_DEVICES = {"CON", "PRN", "AUX", "NUL", *(f"COM{k}" for k in range(1, 10)), *(f"LPT{k}" for k in range(1, 10))}
+_DEVICES = {d.upper() for d in _WINDOWS_DEVICES}
 
 
 def container(source, depth: int = 0):
@@ -155,9 +171,11 @@ class Vhd(_Device):
             raise PackportError("The VHD is damaged (its dynamic disk header)")
         table, = struct.unpack_from(">Q", hdr, 16)
         entries, self.block_size = struct.unpack_from(">II", hdr, 28)
-        if not self.block_size or self.block_size & 511 or entries > 1 << 24:
+        if not self.block_size or self.block_size & 511 or self.block_size > MAX_BLOCK or entries > 1 << 24:
             raise PackportError("The VHD is damaged (its block table)")
-        self.bat = struct.unpack(f">{entries}I", source.read_at(table, 4 * entries).ljust(4 * entries, b"\xff"))
+        entries = min(entries, -(-self.size // self.block_size))  # only the blocks the disk's size needs
+        raw = source.read_at(table, 4 * entries)
+        self.bat = struct.unpack(f">{len(raw) // 4}I", raw[:len(raw) // 4 * 4])  # missing entries: not there
         self.bitmap = ((self.block_size // 512 + 7) // 8 + 511) // 512 * 512
         self.parent = None
         if kind == 4:
@@ -176,6 +194,14 @@ class Vhd(_Device):
                 raise PackportError("The disk image is damaged (a read past its end)")
             return self.src.read_at(offset, min(n, self.size - offset))
         return super().read_at(offset, n)
+
+    def read_range(self, index: int, inner: int, n: int) -> bytes:
+        if self.parent is None:  # a block of this disk alone: the piece wanted, straight from the file
+            sector = self.bat[index] if index < len(self.bat) else 0xFFFFFFFF
+            if sector == 0xFFFFFFFF:
+                return bytes(n)
+            return self.src.read_at(sector * 512 + self.bitmap + inner, n).ljust(n, b"\0")
+        return super().read_range(index, inner, n)
 
     def read_block(self, index: int) -> bytes:
         bs = self.block_size
@@ -215,11 +241,6 @@ def _crc32c(data: bytes) -> int:
     for b in data:
         crc = table[(crc ^ b) & 0xFF] ^ (crc >> 8)
     return crc ^ 0xFFFFFFFF
-
-
-def _guid(b: bytes) -> str:
-    a, b2, c = struct.unpack_from("<IHH", b, 0)
-    return f"{a:08x}-{b2:04x}-{c:04x}-{b[8:10].hex()}-{b[10:16].hex()}"
 
 
 BAT_REGION = "2dc27766-f623-4200-9d64-115e9bfd4a08"
@@ -262,7 +283,8 @@ class Vhdx(_Device):
             sector, = struct.unpack_from("<I", items[LOGICAL_SECTOR], 0)
         except (KeyError, struct.error):
             raise PackportError("The VHDX is damaged (its metadata)") from None
-        if not self.block_size or self.block_size & (self.block_size - 1) or sector not in (512, 4096):
+        if not 1 << 20 <= self.block_size <= MAX_BLOCK or self.block_size & (self.block_size - 1) \
+                or sector not in (512, 4096):  # the spec's 1 MB to 256 MB
             raise PackportError("The VHDX is damaged (its block size)")
         self.sector = sector
         self.ratio = (1 << 23) * sector // self.block_size  # payload blocks per sector-bitmap block
@@ -283,6 +305,13 @@ class Vhdx(_Device):
                 raise PackportError("The differencing VHDX doesn't name its parent")
             parent_file = _File(_sibling(source, name), source)
             self.parent = container(parent_file, depth + 1) or parent_file
+
+    def read_range(self, index: int, inner: int, n: int) -> bytes:
+        k = index + index // self.ratio
+        entry = self.bat[k] if k < len(self.bat) else 0
+        if entry & 7 == 6:  # fully present: the piece wanted, straight from the file
+            return self.src.read_at(((entry >> 20) << 20) + inner, n).ljust(n, b"\0")
+        return super().read_range(index, inner, n)
 
     def read_block(self, index: int) -> bytes:
         bs = self.block_size
@@ -441,6 +470,8 @@ class Qcow2(_Device):
             hlen, = struct.unpack_from(">I", h, 100)
             if incompat & 0x10:
                 raise PackportError("This QCOW2 image uses extended L2 entries, which packport doesn't read")
+            if incompat & 0x04:
+                raise PackportError("This QCOW2 image keeps its data in an external file, which packport doesn't read")
             if incompat & ~0x1F & 0xFFFFFFFFFFFFFFFF:
                 raise PackportError("This QCOW2 image uses features packport doesn't read")
             self.zstd = hlen > 104 and h[104] == 1
@@ -448,7 +479,9 @@ class Qcow2(_Device):
         self.block_size = 1 << bits
         if l1_size > 1 << 26:
             raise PackportError("The QCOW2 image is damaged (its L1 table)")
-        self.l1 = struct.unpack(f">{l1_size}Q", source.read_at(l1_off, 8 * l1_size).ljust(8 * l1_size, b"\0"))
+        l1_size = min(l1_size, -(-self.size // (self.block_size * (self.block_size // 8))))  # what the size needs
+        raw = source.read_at(l1_off, 8 * l1_size)
+        self.l1 = struct.unpack(f">{len(raw) // 8}Q", raw[:len(raw) // 8 * 8])  # missing entries: not there
         self.l2_cache: dict[int, tuple] = {}
         self.backing = None
         if back_off and back_len:
@@ -481,7 +514,7 @@ class Qcow2(_Device):
                     from .arformat import zstd_reader
                     return zstd_reader(io.BytesIO(raw)).read(cs).ljust(cs, b"\0")
                 return zlib.decompressobj(-12).decompress(raw, cs).ljust(cs, b"\0")
-            except Exception as e:  # noqa: BLE001 - zlib and zstd errors alike
+            except Exception as e:
                 raise PackportError(f"The QCOW2 image is damaged ({e})") from None
         offset = entry & 0x00FFFFFFFFFFFE00
         if entry & 1:  # reads as zeros (version 3)
@@ -503,11 +536,19 @@ class Vdi(_Device):
         self.blocks_at, self.data_at = struct.unpack_from("<II", h, 0x154)
         self.size, = struct.unpack_from("<Q", h, 0x170)
         self.block_size, self.extra, blocks = struct.unpack_from("<III", h, 0x178)
-        if kind not in (1, 2) or not self.block_size or blocks > 1 << 24:
+        if kind not in (1, 2) or not self.block_size or self.block_size > MAX_BLOCK or blocks > 1 << 24:
             if kind == 4:
                 raise PackportError("This is a differencing VDI; packport reads its base disk instead")
             raise PackportError("The VDI is damaged (its header)")
-        self.map = struct.unpack(f"<{blocks}I", source.read_at(self.blocks_at, 4 * blocks).ljust(4 * blocks, b"\xff"))
+        blocks = min(blocks, -(-self.size // self.block_size))
+        raw = source.read_at(self.blocks_at, 4 * blocks)
+        self.map = struct.unpack(f"<{len(raw) // 4}I", raw[:len(raw) // 4 * 4])  # missing entries: not there
+
+    def read_range(self, index: int, inner: int, n: int) -> bytes:
+        k = self.map[index] if index < len(self.map) else 0xFFFFFFFF
+        if k >= 0xFFFFFFFE:
+            return bytes(n)
+        return self.src.read_at(self.data_at + k * (self.block_size + self.extra) + self.extra + inner, n).ljust(n, b"\0")
 
     def read_block(self, index: int) -> bytes:
         bs = self.block_size
@@ -573,7 +614,7 @@ class Dmg(_Device):
         try:
             plist = plistlib.loads(source.read_at(xml_at, min(xml_len, 64 << 20)))
             blocks = plist["resource-fork"]["blkx"]
-        except Exception:  # noqa: BLE001 - plistlib raises many kinds
+        except Exception:
             raise PackportError("The DMG is damaged (its partition list)") from None
         self.chunks: list[tuple[int, int, int, int, int]] = []  # (first sector, sectors, type, offset, length)
         for b in blocks:
@@ -650,7 +691,7 @@ class Dmg(_Device):
                 raise PackportError(f"This DMG uses a chunk type packport doesn't know ({kind:#x})")
         except PackportError:
             raise
-        except Exception as e:  # noqa: BLE001 - zlib, bz2 and lzma errors alike
+        except Exception as e:
             raise PackportError(f"The DMG is damaged ({e})") from None
         self.cache = (k, data.ljust(want, b"\0"))
         return self.cache[1]

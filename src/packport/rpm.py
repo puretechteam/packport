@@ -16,7 +16,7 @@ import struct
 import zlib
 
 from .archive import Archive, Item, reader
-from .entries import CHUNK, PackportError
+from .entries import CHUNK, PackportError, spool_limit, too_big
 
 LEAD = b"\xed\xab\xee\xdb"
 HEADER = b"\x8e\xad\xe8\x01"
@@ -24,8 +24,9 @@ _PAYLOAD_COMPRESSOR = 1125
 MAX_INDEX = 1 << 16
 
 
-def _header(source, pos: int) -> tuple[dict[int, tuple[int, bytes, int]], int]:
-    """{tag: (type, data from its offset on, count)} and the position after the header."""
+def _header(source, pos: int) -> tuple[dict[int, tuple[int, memoryview, int]], int]:
+    """{tag: (type, data from its offset on, count)} and the position after the header (the data
+    a view into the header's, never a copy: 65,536 tags of a 4 MB header would be 256 GB)."""
     head = source.read_at(pos, 16)
     if len(head) < 16 or head[:4] != HEADER:
         raise PackportError("This RPM package is damaged (a header is missing)")
@@ -37,17 +38,19 @@ def _header(source, pos: int) -> tuple[dict[int, tuple[int, bytes, int]], int]:
     if len(index) < 16 * count or len(data) < size:
         raise PackportError("This RPM package is cut short")
     tags = {}
+    view = memoryview(data)
     for i in range(count):
         tag, kind, offset, n = struct.unpack(">IIII", index[16 * i:16 * i + 16])
         if offset <= size:
-            tags[tag] = (kind, data[offset:], n)
+            tags[tag] = (kind, view[offset:], n)
     return tags, pos + 16 + 16 * count + size
 
 
 def _string(entry) -> str | None:
     if entry is None or entry[0] not in (6, 8, 9):  # STRING, STRING_ARRAY, I18NSTRING
         return None
-    return entry[1].split(b"\0", 1)[0].decode("utf-8", "replace")
+    data = bytes(entry[1][:4096])
+    return data.split(b"\0", 1)[0].decode("utf-8", "replace")
 
 
 def _sniff(head: bytes, _source) -> bool:
@@ -87,13 +90,17 @@ class RpmArchive(Archive):
         raw = Window(source, pos, source.size - pos)
         # the payload streams out once, into a temporary file, so its members can be read in any order
         import tempfile
-        self.spool = tempfile.TemporaryFile()  # noqa: SIM115 - closed by close()
+        self.spool = tempfile.TemporaryFile()
+        limit, got = spool_limit(source, raw.size), 0
         try:
             stream = payload_stream(raw, compressor)
             while True:
                 chunk = stream.read(CHUNK)
                 if not chunk:
                     break
+                got += len(chunk)
+                if got > limit:
+                    raise too_big("This RPM package's payload", limit)
                 self.spool.write(chunk)
         except (OSError, EOFError, zlib.error, lzma.LZMAError, ValueError) as e:
             self.spool.close()

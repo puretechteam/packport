@@ -8,7 +8,6 @@ bits reversed.
 
 from __future__ import annotations
 
-import io
 from collections.abc import Iterator
 
 from . import entries
@@ -57,11 +56,6 @@ def _fixed():
     if _FIXED is None:
         _FIXED = (_table([8] * 144 + [9] * 112 + [7] * 24 + [8] * 8), _table([5] * 32))
     return _FIXED
-
-
-def decompress(data: bytes, size: int) -> bytes:
-    """size bytes of output (or what the stream holds, if less)."""
-    return b"".join(decompress_iter(io.BytesIO(data), size))
 
 
 WINDOW = 1 << 16

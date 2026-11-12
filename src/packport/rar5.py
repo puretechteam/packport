@@ -67,16 +67,22 @@ class Unpack5:
         self.last_length = 0
         self.tables = None
         self.filters: list[tuple[int, int, int, int]] = []  # (start, length, type, channels)
+        self.limit = None           # stream position the current file's output may not pass
 
     def unpack(self, packed, size: int | None) -> Iterator[bytes]:
         """Decode one file's packed stream (a readable file object, read a block at a time) into
         chunks of output. size is the file's unpacked size, when known."""
         self.file_start = self.base + len(self.hist)
         self.written = self.file_start
+        # a block decodes whole before its output is checked against the size: past the file's
+        # size it stops at once, so a tiny block can't grow the history to gigabytes first
+        self.limit = None if size is None else self.file_start + size
         nat = self.native
         if nat is not None:
             nat.dictionary = self.dictionary
             nat.begin_file()
+            if hasattr(nat, "limit"):
+                nat.limit = (1 << 64) - 1 if size is None else size
         parts: list[bytes] = []
         last = False
         while not last:
@@ -165,6 +171,7 @@ class Unpack5:
         hist, old = self.hist, self.old
         last_length = self.last_length
         dictionary = self.dictionary
+        room = (1 << 62) if self.limit is None else self.limit - self.base  # how long hist may grow
         from_bytes = int.from_bytes
         s = v = 0
         while pos < end:
@@ -260,6 +267,8 @@ class Unpack5:
             have = len(hist)
             if dist <= 0 or dist > have or dist > dictionary:
                 raise PackportError("The archive is damaged (a match reaches back before the data)")
+            if have + length > room:
+                raise PackportError("The archive is damaged (a file holds more data than its stated size)")
             start = have - dist
             if dist >= length:
                 hist += hist[start:start + length]
@@ -544,11 +553,14 @@ class Rar5Archive(Archive):
         if flags & 8 and carry is not None and carry.name == name:  # continues from the previous volume
             carry.ref["pieces"].append(piece)
             carry.ref["more"] = bool(flags & 0x10)
-            if not carry.ref["more"]:
+            if not carry.ref["more"]:  # the last part carries the whole file's CRC and hash
                 carry.ref["crc"] = crc
+                carry.ref["hash"] = digest
             return carry if carry.ref["more"] else None
         is_dir = bool(file_flags & 1)
         mode = (0o040755 if is_dir else 0o100644) if host == 0 else attributes
+        if host != 0 and not mode & 0o170000:  # permissions with no file type: a plain file or folder
+            mode |= 0o040000 if is_dir else 0o100000
         if host == 0 and attributes & 1 and not is_dir:
             mode = 0o100444
         version, method = info & 0x3F, (info >> 7) & 7
@@ -623,7 +635,7 @@ class Rar5Archive(Archive):
                 decoder = self._decoder(item, decoder)
                 stream = self._stream(item, decoder)
                 if item.name in wanted:
-                    spool = kept[item.name] = tempfile.SpooledTemporaryFile(max_size=16 << 20)  # noqa: SIM115 - closed below
+                    spool = kept[item.name] = tempfile.SpooledTemporaryFile(max_size=16 << 20)
                     stream = Stream(item.name, _tee(stream, spool), None)
                 if item.is_file:
                     yield item, stream
@@ -638,8 +650,10 @@ class Rar5Archive(Archive):
             raise EncryptedError(f"{item.name} is encrypted; packport doesn't decrypt")
         if r["copy_of"] is None and (r["method"] == 0 or not r["solid"]):
             return self._stream(item, self._decoder(item, None))
-        for m, stream in self._files():  # solid data has to be decoded from the start
+        files = self._files()
+        for m, stream in files:  # solid data has to be decoded from the start
             if m is item:
+                stream.keep = files  # the decoder lives as long as the stream (closing it would let it go)
                 return stream
         raise PackportError(f"{item.name} has no data")
 

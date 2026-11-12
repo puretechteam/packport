@@ -122,15 +122,23 @@ class _Folder:
         return self.sizes[self.main_out()]
 
 
+MAX_CODERS = 64  # coders and streams in one folder, as 7-Zip allows (real ones have 1 to 4)
+
+
 def _read_folder(h: _In) -> _Folder:
     f = _Folder()
     total_in = total_out = 0
-    for _ in range(h.count()):
+    coders = h.count()
+    if coders > MAX_CODERS:
+        raise PackportError("The 7z archive is damaged (a folder with too many coders)")
+    for _ in range(coders):
         flags = h.byte()
         method = h.bytes(flags & 0x0F)
         n_in = n_out = 1
         if flags & 0x10:
             n_in, n_out = h.count(), h.count()
+            if total_in + n_in > MAX_CODERS or total_out + n_out > MAX_CODERS:
+                raise PackportError("The 7z archive is damaged (a folder with too many streams)")
         props = h.bytes(h.count()) if flags & 0x20 else b""
         if flags & 0x80:
             raise PackportError("The 7z archive uses alternative coder methods packport doesn't read")
@@ -212,6 +220,8 @@ def _streams(h: _In, pack_base: int):
                     if c == 0:
                         continue
                     part = [h.number() for _ in range(c - 1)]
+                    if sum(part) > f.size:
+                        raise PackportError("The 7z archive is damaged (its files are bigger than their folder)")
                     sub_sizes.append(part + [f.size - sum(part)])
                 p = h.byte()
             else:
@@ -299,17 +309,29 @@ def _decode_here(f: _Folder, packed: list) -> Iterator[bytes]:
         raise PackportError("The 7z archive is damaged (a folder's CRC doesn't match)")
 
 
-def _lzma_filter(name: str, props: bytes) -> dict:
+def _dictionary(declared: int, size: int | None) -> int:
+    """The dictionary liblzma is given: no bigger than what the data unpacks to (it never looks
+    further back than that, so the output is the same), which liblzma allocates up front: a header
+    saying 4 GB for a few bytes of data no longer takes 4 GB."""
+    if size is not None:
+        declared = min(declared, size)
+    return min(max(declared, 4096), 0xFFFFFFFF)
+
+
+def _lzma_filter(name: str, props: bytes, size: int | None = None) -> dict:
     if name == "lzma":
         if len(props) < 5:
             raise PackportError("The 7z archive is damaged (LZMA properties)")
         b, dict_size = props[0], struct.unpack_from("<I", props, 1)[0]
         lc, rest = b % 9, b // 9
-        return {"id": lzma.FILTER_LZMA1, "lc": lc, "lp": rest % 5, "pb": rest // 5, "dict_size": max(dict_size, 4096)}
+        return {"id": lzma.FILTER_LZMA1, "lc": lc, "lp": rest % 5, "pb": rest // 5,
+                "dict_size": _dictionary(dict_size, size)}
     if name == "lzma2":
         b = props[0] if props else 0
+        if b > 40:
+            raise PackportError("The 7z archive is damaged (LZMA2 properties)")
         dict_size = 0xFFFFFFFF if b == 40 else (2 | (b & 1)) << (b // 2 + 11)
-        return {"id": lzma.FILTER_LZMA2, "dict_size": min(dict_size, 1 << 30)}
+        return {"id": lzma.FILTER_LZMA2, "dict_size": _dictionary(dict_size, size)}
     if name == "delta":
         return {"id": lzma.FILTER_DELTA, "dist": (props[0] if props else 0) + 1}
     flt = {"id": LZMA_FILTERS[name]}
@@ -380,7 +402,7 @@ def _coder(name: str, props: bytes, inputs: list, size: int) -> Iterator[bytes]:
     if name == "copy":
         yield from stored(inp, size)
     elif name in ("lzma", "lzma2"):
-        yield from _decompressor(lzma.LZMADecompressor(lzma.FORMAT_RAW, filters=[_lzma_filter(name, props)]),
+        yield from _decompressor(lzma.LZMADecompressor(lzma.FORMAT_RAW, filters=[_lzma_filter(name, props, size)]),
                                  inp, size)
     elif name == "bzip2":
         left = size
@@ -640,7 +662,7 @@ class SevenZipArchive(Archive):
             packs, folders, sub_sizes, sub_crcs = _streams(h, 32)
             prop = h.byte()
         self.folders, self.packs = folders, packs
-        names, empty, empty_file, mtimes, attrs = [], [], [], [], []
+        names, empty, empty_file, mtimes, attrs, anti = [], [], [], [], [], []
         n = 0
         if prop == 0x05:
             n = h.count()
@@ -655,7 +677,7 @@ class SevenZipArchive(Archive):
                     empty = body.bits(n)
                 elif p == 0x0F:
                     empty_file = body.bits(sum(empty))
-                elif p == 0x10:
+                elif p == 0x10:  # anti-items: deletion markers of an update, not files
                     anti = body.bits(sum(empty))
                 elif p == 0x11:
                     if body.byte():
@@ -671,7 +693,6 @@ class SevenZipArchive(Archive):
                     if body.byte():
                         raise PackportError("The 7z archive keeps its attributes elsewhere")
                     attrs = [struct.unpack("<I", body.bytes(4))[0] if d else 0 for d in defined]
-            del anti
         elif prop != 0x00:
             raise PackportError("The 7z archive is damaged (its header)")
         if not names:
@@ -691,7 +712,10 @@ class SevenZipArchive(Archive):
             mode = attr >> 16 if attr & 0x8000 else 0
             if empty[k] if k < len(empty) else False:
                 is_file = empty_k < len(empty_file) and empty_file[empty_k]
+                is_anti = empty_k < len(anti) and anti[empty_k]
                 empty_k += 1
+                if is_anti:
+                    continue
                 is_dir = not is_file and not (mode and (mode & 0o170000) == 0o100000)
                 if attr & 0x10:
                     is_dir = True
@@ -723,7 +747,9 @@ class SevenZipArchive(Archive):
             for j, f in enumerate(self.folders):
                 packs = self.packs[first:first + len(f.packed)]
                 first += len(f.packed)
-                if f.size <= AHEAD and sum(size for _, size in packs) <= AHEAD and len(packs) == len(f.packed):
+                # PPMd folders are never decoded side by side: each takes its model's memory (up to 2 GB)
+                if (f.size <= AHEAD and sum(size for _, size in packs) <= AHEAD and len(packs) == len(f.packed)
+                        and not any(c[0] == "ppmd" for c in f.coders)):
                     raw = [io.BytesIO(self.source.read_at(pos, size)) for pos, size in packs]
                     yield lambda f=f, raw=raw, j=j: (j, b"".join(_decode(f, raw)))
                 else:
