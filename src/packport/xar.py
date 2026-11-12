@@ -214,7 +214,7 @@ class PkgArchive(XarArchive):
             base = item.name.rsplit("/", 1)[-1]
             if base not in ("Payload", "Scripts") or not item.is_file:
                 continue
-            spool = tempfile.TemporaryFile()
+            spool = tempfile.TemporaryFile()  # noqa: SIM115 - closed by close()
             self.spools.append(spool)
             stream = XarArchive.open_member(self, item)
             head = stream.read(6)

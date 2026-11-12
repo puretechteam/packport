@@ -147,7 +147,7 @@ class _Spool:
     bytes at most (more is a bomb, refused before it fills the disk)."""
 
     def __init__(self, chunks, limit: int | None = None):
-        self.f = tempfile.SpooledTemporaryFile(max_size=4 << 20)
+        self.f = tempfile.SpooledTemporaryFile(max_size=4 << 20)  # noqa: SIM115 - closed by close()
         try:
             size = 0
             for chunk in chunks:

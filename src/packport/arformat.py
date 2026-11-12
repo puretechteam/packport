@@ -137,7 +137,7 @@ class DebArchive(Archive):
                 continue
             prefix = "DEBIAN/" if name.startswith("control") else ""
             try:
-                tar = tarfile.open(fileobj=decompressed(Window(source, at, size), name), mode="r:")
+                tar = tarfile.open(fileobj=decompressed(Window(source, at, size), name), mode="r:")  # noqa: SIM115 - closed by close()
                 infos = tar.getmembers()
             except (tarfile.TarError, OSError, EOFError, zlib.error, lzma.LZMAError) as e:
                 raise PackportError(f"This package's {name} is damaged ({e})") from None

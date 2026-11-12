@@ -90,7 +90,7 @@ class RpmArchive(Archive):
         raw = Window(source, pos, source.size - pos)
         # the payload streams out once, into a temporary file, so its members can be read in any order
         import tempfile
-        self.spool = tempfile.TemporaryFile()
+        self.spool = tempfile.TemporaryFile()  # noqa: SIM115 - closed by close()
         limit, got = spool_limit(source, raw.size), 0
         try:
             stream = payload_stream(raw, compressor)

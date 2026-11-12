@@ -294,7 +294,7 @@ def _create(target: Path, counters: dict[str, int]):
     while True:
         path = target.with_name(f"{stem} ({n}){suffix}") if n else target
         try:
-            f = open(path, "xb")
+            f = open(path, "xb")  # noqa: SIM115 - the caller closes it
         except FileExistsError:
             pass
         except (IsADirectoryError, PermissionError):  # a folder, on some systems

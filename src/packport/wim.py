@@ -237,7 +237,7 @@ class WimArchive(Archive):
                     continue
                 stream = self.open_member(m)
                 if uses[digest] > 1:
-                    spool = kept[digest] = tempfile.SpooledTemporaryFile(max_size=16 << 20)
+                    spool = kept[digest] = tempfile.SpooledTemporaryFile(max_size=16 << 20)  # noqa: SIM115 - closed below
                     stream = Stream(m.name, _tee(stream, spool), res[3], what="WIM")
                 yield m, stream
                 stream.drain()

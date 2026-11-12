@@ -635,7 +635,7 @@ class Rar5Archive(Archive):
                 decoder = self._decoder(item, decoder)
                 stream = self._stream(item, decoder)
                 if item.name in wanted:
-                    spool = kept[item.name] = tempfile.SpooledTemporaryFile(max_size=16 << 20)
+                    spool = kept[item.name] = tempfile.SpooledTemporaryFile(max_size=16 << 20)  # noqa: SIM115 - closed below
                     stream = Stream(item.name, _tee(stream, spool), None)
                 if item.is_file:
                     yield item, stream

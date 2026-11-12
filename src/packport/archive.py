@@ -80,13 +80,13 @@ class Source:
         if isinstance(src, (bytes, bytearray, memoryview)):
             self.f: BinaryIO = io.BytesIO(bytes(src))
         elif isinstance(src, (list, tuple)):
-            parts = [builtins.open(p, "rb") for p in src]
+            parts = [builtins.open(p, "rb") for p in src]  # noqa: SIM115 - closed by close()
             self.owned = parts
             self.f = _Joined(parts)
         elif hasattr(src, "read"):
             self.f = src
         else:
-            self.f = builtins.open(src, "rb")
+            self.f = builtins.open(src, "rb")  # noqa: SIM115 - closed by close()
             self.owned = [self.f]
         self.f.seek(0, 2)
         self.size = self.f.tell()
@@ -433,7 +433,7 @@ def reader(fmt: str, sniff: Callable[[bytes, Source], bool], first: bool = False
 
 
 def _load_readers() -> None:
-    from . import (
+    from . import (  # noqa: F401 - each registers its readers
         arformat,
         arj,
         cab,

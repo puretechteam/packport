@@ -237,7 +237,7 @@ class Output:
 
     def __init__(self, out):
         self.owned = isinstance(out, (str, os.PathLike))
-        self.f: BinaryIO = open(out, "wb") if self.owned else out
+        self.f: BinaryIO = open(out, "wb") if self.owned else out  # noqa: SIM115 - closed by close()
 
     def close(self, failed: bool = False):
         if self.owned:

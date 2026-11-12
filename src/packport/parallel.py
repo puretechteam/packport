@@ -93,7 +93,7 @@ def streamed(chunks: Iterable[T], depth: int = 4) -> Iterator[T]:
                 if not put((chunk, None)):
                     return
             put((_END, None))
-        except BaseException as e:
+        except BaseException as e:  # noqa: BLE001 - handed to the consumer, raised there
             put((_END, e))
         finally:
             close = getattr(chunks, "close", None)

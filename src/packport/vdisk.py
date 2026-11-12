@@ -69,7 +69,7 @@ class _File:
 
     def __init__(self, path: Path, owner):
         self.path, self.lock = path, threading.Lock()
-        self.f = builtins.open(path, "rb")
+        self.f = builtins.open(path, "rb")  # noqa: SIM115 - closed with the archive
         self.owned = getattr(owner, "owned", None)
         if self.owned is not None:
             self.owned.append(self.f)
@@ -514,7 +514,7 @@ class Qcow2(_Device):
                     from .arformat import zstd_reader
                     return zstd_reader(io.BytesIO(raw)).read(cs).ljust(cs, b"\0")
                 return zlib.decompressobj(-12).decompress(raw, cs).ljust(cs, b"\0")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - zlib and zstd errors alike
                 raise PackportError(f"The QCOW2 image is damaged ({e})") from None
         offset = entry & 0x00FFFFFFFFFFFE00
         if entry & 1:  # reads as zeros (version 3)
@@ -614,7 +614,7 @@ class Dmg(_Device):
         try:
             plist = plistlib.loads(source.read_at(xml_at, min(xml_len, 64 << 20)))
             blocks = plist["resource-fork"]["blkx"]
-        except Exception:
+        except Exception:  # noqa: BLE001 - plistlib raises many kinds
             raise PackportError("The DMG is damaged (its partition list)") from None
         self.chunks: list[tuple[int, int, int, int, int]] = []  # (first sector, sectors, type, offset, length)
         for b in blocks:
@@ -691,7 +691,7 @@ class Dmg(_Device):
                 raise PackportError(f"This DMG uses a chunk type packport doesn't know ({kind:#x})")
         except PackportError:
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - zlib, bz2 and lzma errors alike
             raise PackportError(f"The DMG is damaged ({e})") from None
         self.cache = (k, data.ljust(want, b"\0"))
         return self.cache[1]
